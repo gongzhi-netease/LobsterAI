@@ -58,7 +58,7 @@ import { McpServerManager } from './libs/mcpServerManager';
 import { McpBridgeServer } from './libs/mcpBridgeServer';
 import type { McpBridgeConfig } from './libs/openclawConfigSync';
 import { downloadUpdate, installUpdate, cancelActiveDownload } from './libs/appUpdateInstaller';
-import { initLogger, getLogFilePath } from './logger';
+import { initLogger, getLogFilePath, getRecentMainLogEntries } from './logger';
 import { getCoworkLogPath } from './libs/coworkLogger';
 import { exportLogsZip } from './libs/logExport';
 import { ensurePythonRuntimeReady } from './libs/pythonRuntime';
@@ -1629,7 +1629,7 @@ if (!gotTheLock) {
       const archiveResult = await exportLogsZip({
         outputPath,
         entries: [
-          { archiveName: 'main.log', filePath: getLogFilePath() },
+          ...getRecentMainLogEntries(),
           { archiveName: 'cowork.log', filePath: getCoworkLogPath() },
         ],
       });
@@ -3003,6 +3003,31 @@ if (!gotTheLock) {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to reject pairing request',
       };
+    }
+  });
+
+  // Feishu bot install helpers
+  ipcMain.handle('feishu:install:qrcode', async (_event, { isLark }: { isLark: boolean }) => {
+    try {
+      return await getIMGatewayManager().startFeishuInstallQrcode(isLark);
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : '获取二维码失败');
+    }
+  });
+
+  ipcMain.handle('feishu:install:poll', async (_event, { deviceCode }: { deviceCode: string }) => {
+    try {
+      return await getIMGatewayManager().pollFeishuInstall(deviceCode);
+    } catch (error) {
+      return { done: false, error: error instanceof Error ? error.message : '轮询失败' };
+    }
+  });
+
+  ipcMain.handle('feishu:install:verify', async (_event, { appId, appSecret }: { appId: string; appSecret: string }) => {
+    try {
+      return await getIMGatewayManager().verifyFeishuCredentials(appId, appSecret);
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : '验证失败' };
     }
   });
 

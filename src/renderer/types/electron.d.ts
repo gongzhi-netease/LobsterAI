@@ -433,6 +433,27 @@ interface IElectronAPI {
   networkStatus: {
     send: (status: 'online' | 'offline') => void;
   };
+  feishu: {
+    install: {
+      qrcode: (isLark: boolean) => Promise<{
+        url: string;
+        deviceCode: string;
+        interval: number;
+        expireIn: number;
+      }>;
+      poll: (deviceCode: string) => Promise<{
+        done: boolean;
+        appId?: string;
+        appSecret?: string;
+        domain?: string;
+        error?: string;
+      }>;
+      verify: (appId: string, appSecret: string) => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
+    };
+  };
 }
 
 // IM Gateway types
@@ -599,6 +620,7 @@ interface WecomConfig {
 
 interface PopoOpenClawConfig {
   enabled: boolean;
+  connectionMode: 'websocket' | 'webhook';
   appKey: string;
   appSecret: string;
   token: string;

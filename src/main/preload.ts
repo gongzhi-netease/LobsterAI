@@ -360,4 +360,28 @@ contextBridge.exposeInMainWorld('electron', {
   networkStatus: {
     send: (status: 'online' | 'offline') => ipcRenderer.send('network:status-change', status),
   },
+  feishu: {
+    install: {
+      qrcode: (isLark: boolean) =>
+        ipcRenderer.invoke('feishu:install:qrcode', { isLark }) as Promise<{
+          url: string;
+          deviceCode: string;
+          interval: number;
+          expireIn: number;
+        }>,
+      poll: (deviceCode: string) =>
+        ipcRenderer.invoke('feishu:install:poll', { deviceCode }) as Promise<{
+          done: boolean;
+          appId?: string;
+          appSecret?: string;
+          domain?: string;
+          error?: string;
+        }>,
+      verify: (appId: string, appSecret: string) =>
+        ipcRenderer.invoke('feishu:install:verify', { appId, appSecret }) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+    },
+  },
 });

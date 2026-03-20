@@ -833,13 +833,17 @@ export class OpenClawConfigSync {
 
     // Sync POPO OpenClaw channel config (via moltbot-popo plugin)
     if (popoConfig?.enabled && popoConfig.appKey) {
+      // Migration: old configs lack connectionMode. If token is set, the user
+      // was using webhook mode; otherwise default to the new websocket mode.
+      const effectiveConnectionMode = popoConfig.connectionMode
+        || (popoConfig.token ? 'webhook' : 'websocket');
+      const isWebSocket = effectiveConnectionMode === 'websocket';
       const popoChannel: Record<string, unknown> = {
         enabled: true,
+        connectionMode: effectiveConnectionMode,
         appKey: popoConfig.appKey,
         appSecret: '${LOBSTER_POPO_APP_SECRET}',
-        token: '${LOBSTER_POPO_TOKEN}',
         aesKey: popoConfig.aesKey,
-        webhookPort: popoConfig.webhookPort || 3100,
         dmPolicy: popoConfig.dmPolicy || 'open',
         allowFrom: (() => {
           const ids = popoConfig.allowFrom?.length ? [...popoConfig.allowFrom] : [];
@@ -853,16 +857,21 @@ export class OpenClawConfigSync {
           return ids;
         })(),
       };
+      // Webhook-only fields
+      if (!isWebSocket) {
+        popoChannel.token = '${LOBSTER_POPO_TOKEN}';
+        popoChannel.webhookPort = popoConfig.webhookPort || 3100;
+      }
       if (popoConfig.textChunkLimit && popoConfig.textChunkLimit !== 3000) {
         popoChannel.textChunkLimit = popoConfig.textChunkLimit;
       }
       if (popoConfig.richTextChunkLimit && popoConfig.richTextChunkLimit !== 5000) {
         popoChannel.richTextChunkLimit = popoConfig.richTextChunkLimit;
       }
-      if (popoConfig.webhookBaseUrl) {
+      if (!isWebSocket && popoConfig.webhookBaseUrl) {
         popoChannel.webhookBaseUrl = popoConfig.webhookBaseUrl;
       }
-      if (popoConfig.webhookPath && popoConfig.webhookPath !== '/popo/callback') {
+      if (!isWebSocket && popoConfig.webhookPath && popoConfig.webhookPath !== '/popo/callback') {
         popoChannel.webhookPath = popoConfig.webhookPath;
       }
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'moltbot-popo': popoChannel };
