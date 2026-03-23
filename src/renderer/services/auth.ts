@@ -11,6 +11,9 @@ class AuthService {
    * Initialize: try to restore login state from persisted token.
    */
   async init() {
+    // Clean up any existing listeners to prevent stacking on repeated init()
+    this.destroy();
+
     store.dispatch(setAuthLoading(true));
     try {
       const result = await window.electron.auth.getUser();
@@ -133,7 +136,9 @@ class AuthService {
 
   destroy() {
     this.unsubCallback?.();
+    this.unsubCallback = null;
     this.unsubQuotaChanged?.();
+    this.unsubQuotaChanged = null;
   }
 
   /**

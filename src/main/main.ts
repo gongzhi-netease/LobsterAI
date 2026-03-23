@@ -48,7 +48,7 @@ import { IMGatewayManager, IMPlatform, IMGatewayConfig } from './im';
 import { APP_NAME } from './appConstants';
 import { getSkillServiceManager } from './skillServices';
 import { createTray, destroyTray, updateTrayMenu } from './trayManager';
-import { setLanguage } from './i18n';
+import { setLanguage, t } from './i18n';
 import { isAutoLaunched, getAutoLaunchEnabled, setAutoLaunchEnabled } from './autoLaunchManager';
 import { McpStore } from './mcpStore';
 import { CronJobService } from './libs/cronJobService';
@@ -1577,39 +1577,50 @@ if (!gotTheLock) {
   // Register custom protocol for OAuth callback
   app.setAsDefaultProtocolClient('lobsterai');
 
-  // macOS: handle open-url event for deep links
-  app.on('open-url', (event, url) => {
-    event.preventDefault();
+  // Buffer for deep link auth code received before renderer is ready
+  let pendingAuthCode: string | null = null;
+
+  /**
+   * Parse a lobsterai:// deep link and send (or buffer) the auth code.
+   */
+  const handleDeepLink = (url: string) => {
     try {
       const parsed = new URL(url);
       if (parsed.hostname === 'auth' && parsed.pathname === '/callback') {
         const code = parsed.searchParams.get('code');
-        if (code && mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('auth:callback', { code });
+        if (code) {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('auth:callback', { code });
+          } else {
+            pendingAuthCode = code;
+          }
         }
       }
     } catch (e) {
-      console.error('[Main] Failed to parse open-url:', e);
+      console.error('[Main] Failed to parse deep link:', e);
     }
+  };
+
+  // Allow renderer to retrieve a buffered auth code on init
+  ipcMain.handle('auth:getPendingCallback', () => {
+    const code = pendingAuthCode;
+    pendingAuthCode = null;
+    return code;
+  });
+
+  // macOS: handle open-url event for deep links
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    handleDeepLink(url);
   });
 
   app.on('second-instance', (_event, commandLine, workingDirectory) => {
-    console.log('[Main] second-instance event', { commandLine, workingDirectory });
+    console.debug('[Main] second-instance event', { commandLine, workingDirectory });
 
     // Check for deep link in command line args (Windows/Linux)
     const deepLink = commandLine.find(arg => arg.startsWith('lobsterai://'));
     if (deepLink) {
-      try {
-        const parsed = new URL(deepLink);
-        if (parsed.hostname === 'auth' && parsed.pathname === '/callback') {
-          const code = parsed.searchParams.get('code');
-          if (code && mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('auth:callback', { code });
-          }
-        }
-      } catch (e) {
-        console.error('[Main] Failed to parse deep link:', e);
-      }
+      handleDeepLink(deepLink);
     }
 
     // Focus main window
@@ -1849,26 +1860,26 @@ if (!gotTheLock) {
   const normalizeQuota = (raw: Record<string, unknown>) => {
     let creditsLimit = 0;
     let creditsUsed = 0;
-    let planName = '免费';
+    let planName = t('authPlanFree');
     let subscriptionStatus = 'free';
 
     if (typeof raw.freeCreditsTotal === 'number') {
       // Free user format from /api/user/quota
       creditsLimit = raw.freeCreditsTotal as number;
       creditsUsed = (raw.freeCreditsUsed as number) || 0;
-      planName = (raw.planName as string) || '免费';
+      planName = (raw.planName as string) || t('authPlanFree');
       subscriptionStatus = (raw.subscriptionStatus as string) || 'free';
     } else if (typeof raw.monthlyCreditsLimit === 'number') {
       // Paid user format from /api/user/quota
       creditsLimit = raw.monthlyCreditsLimit as number;
       creditsUsed = (raw.monthlyCreditsUsed as number) || 0;
-      planName = (raw.planName as string) || '标准';
+      planName = (raw.planName as string) || t('authPlanStandard');
       subscriptionStatus = (raw.subscriptionStatus as string) || 'active';
     } else if (typeof raw.dailyCreditsLimit === 'number') {
       // Legacy exchange format
       creditsLimit = raw.dailyCreditsLimit as number;
       creditsUsed = (raw.dailyCreditsUsed as number) || 0;
-      planName = (raw.planName as string) || '免费';
+      planName = (raw.planName as string) || t('authPlanFree');
       subscriptionStatus = (raw.subscriptionStatus as string) || 'free';
     } else if (typeof raw.creditsLimit === 'number') {
       // Already normalized
@@ -4360,6 +4371,23 @@ if (!gotTheLock) {
     console.log('[Main] initApp: creating window');
     createWindow();
     console.log('[Main] initApp: window created');
+
+    // Windows/Linux cold start: parse deep link from process.argv
+    // Always buffer since renderer is not ready yet after createWindow()
+    const coldStartDeepLink = process.argv.find(arg => arg.startsWith('lobsterai://'));
+    if (coldStartDeepLink) {
+      try {
+        const parsed = new URL(coldStartDeepLink);
+        if (parsed.hostname === 'auth' && parsed.pathname === '/callback') {
+          const code = parsed.searchParams.get('code');
+          if (code) {
+            pendingAuthCode = code;
+          }
+        }
+      } catch (e) {
+        console.error('[Main] Failed to parse cold-start deep link:', e);
+      }
+    }
 
     // Auto-reconnect IM bots that were enabled before restart
     getIMGatewayManager().startAllEnabled().catch((error) => {
