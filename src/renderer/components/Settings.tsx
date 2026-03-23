@@ -2662,9 +2662,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                                   {i18nService.t('qwenOAuthLogout')}
                                 </button>
                               </div>
-                              <p className="mt-1 text-xs text-green-600/80 dark:text-green-400/80">
-                                {i18nService.t('qwenOAuthTokenExpires').replace('{date}', new Date(providers.qwen.oauthCredentials.expires).toLocaleString())}
-                              </p>
                             </div>
                           ) : (
                             <div className="space-y-2">
@@ -2833,9 +2830,10 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                         type="radio"
                         name={`${activeProvider}-apiFormat`}
                         value="anthropic"
-                        checked={getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat) !== 'openai'}
+                        checked={activeProvider === 'qwen' && qwenAuthTab === 'oauth' ? false : getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat) !== 'openai'}
                         onChange={() => handleProviderConfigChange(activeProvider, 'apiFormat', 'anthropic')}
-                        className="h-3.5 w-3.5 text-claude-accent focus:ring-claude-accent dark:bg-claude-darkSurface bg-claude-surface"
+                        disabled={activeProvider === 'qwen' && qwenAuthTab === 'oauth'}
+                        className="h-3.5 w-3.5 text-claude-accent focus:ring-claude-accent dark:bg-claude-darkSurface bg-claude-surface disabled:opacity-50"
                       />
                       <span className="ml-2 text-xs dark:text-claude-darkText text-claude-text">
                         {i18nService.t('apiFormatNative')}
@@ -2846,9 +2844,10 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                         type="radio"
                         name={`${activeProvider}-apiFormat`}
                         value="openai"
-                        checked={getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat) === 'openai'}
+                        checked={activeProvider === 'qwen' && qwenAuthTab === 'oauth' ? true : getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat) === 'openai'}
                         onChange={() => handleProviderConfigChange(activeProvider, 'apiFormat', 'openai')}
-                        className="h-3.5 w-3.5 text-claude-accent focus:ring-claude-accent dark:bg-claude-darkSurface bg-claude-surface"
+                        disabled={activeProvider === 'qwen' && qwenAuthTab === 'oauth'}
+                        className="h-3.5 w-3.5 text-claude-accent focus:ring-claude-accent dark:bg-claude-darkSurface bg-claude-surface disabled:opacity-50"
                       />
                       <span className="ml-2 text-xs dark:text-claude-darkText text-claude-text">
                         {i18nService.t('apiFormatOpenAI')}
