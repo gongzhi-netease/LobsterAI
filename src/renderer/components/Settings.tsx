@@ -28,7 +28,7 @@ import type {
 import IMSettings from './im/IMSettings';
 import { imService } from '../services/im';
 import EmailSkillConfig from './skills/EmailSkillConfig';
-import { defaultConfig, type AppConfig, getVisibleProviders } from '../config';
+import { defaultConfig, type AppConfig, getVisibleProviders, isCustomProvider, getCustomProviderDefaultName } from '../config';
 import {
   OpenAIIcon,
   DeepSeekIcon,
@@ -59,6 +59,7 @@ interface SettingsProps extends SettingsOpenOptions {
   onUpdateFound?: (info: AppUpdateInfo) => void;
 }
 
+
 const providerKeys = [
   'openai',
   'gemini',
@@ -74,7 +75,6 @@ const providerKeys = [
   'xiaomi',
   'openrouter',
   'ollama',
-  'custom',
 ] as const;
 
 type ProviderType = (typeof providerKeys)[number];
@@ -130,7 +130,7 @@ interface ProvidersImportPayload {
   providers?: Record<string, ProvidersImportEntry>;
 }
 
-const providerMeta: Record<ProviderType, { label: string; icon: React.ReactNode }> = {
+const providerMeta: Record<string, { label: string; icon: React.ReactNode }> = {
   openai: { label: 'OpenAI', icon: <OpenAIIcon /> },
   deepseek: { label: 'DeepSeek', icon: <DeepSeekIcon /> },
   gemini: { label: 'Gemini', icon: <GeminiIcon /> },
@@ -145,7 +145,6 @@ const providerMeta: Record<ProviderType, { label: string; icon: React.ReactNode 
   volcengine: { label: 'Volcengine', icon: <VolcengineIcon /> },
   openrouter: { label: 'OpenRouter', icon: <OpenRouterIcon /> },
   ollama: { label: 'Ollama', icon: <OllamaIcon /> },
-  custom: { label: 'Custom', icon: <CustomProviderIcon /> },
 };
 
 const providerSwitchableDefaultBaseUrls: Partial<Record<ProviderType, { anthropic: string; openai: string }>> = {
@@ -185,13 +184,9 @@ const providerSwitchableDefaultBaseUrls: Partial<Record<ProviderType, { anthropi
     anthropic: 'http://localhost:11434',
     openai: 'http://localhost:11434/v1',
   },
-  custom: {
-    anthropic: '',
-    openai: '',
-  },
 };
 
-const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama';
+const providerRequiresApiKey = (provider: string) => provider !== 'ollama';
 const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '').toLowerCase();
 const normalizeApiFormat = (value: unknown): 'anthropic' | 'openai' => (
   value === 'openai' ? 'openai' : 'anthropic'
@@ -2897,7 +2892,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     </div>
                   )}
                 </div>
-                {activeProvider === 'custom' && (
+                {isCustomProvider(activeProvider) && (
                 <div className="mt-1.5 space-y-0.5 text-[11px] text-claude-secondaryText dark:text-claude-darkSecondaryText">
                   <p>
                     <span className="text-sm text-claude-accent/50 mr-1">•</span>
