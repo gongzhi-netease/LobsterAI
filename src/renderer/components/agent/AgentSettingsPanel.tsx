@@ -4,7 +4,7 @@ import { RootState } from '../../store';
 import { agentService } from '../../services/agent';
 import { imService } from '../../services/im';
 import { i18nService } from '../../services/i18n';
-import { XMarkIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, TrashIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import type { Agent } from '../../types/agent';
 import type { IMPlatform, IMGatewayConfig } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
@@ -161,7 +161,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         {/* Header: agent icon + name + close */}
         <div className="flex items-center justify-between px-5 py-4 border-b dark:border-claude-darkBorder border-claude-border">
           <div className="flex items-center gap-2">
-            <span className="text-xl">{icon || '🤖'}</span>
+            <span className="text-xl">{icon || '🦞'}</span>
             <h3 className="text-base font-semibold dark:text-claude-darkText text-claude-text">
               {name || (i18nService.t('agentSettings') || 'Agent Settings')}
             </h3>
@@ -205,7 +205,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                     type="text"
                     value={icon}
                     onChange={(e) => setIcon(e.target.value)}
-                    placeholder="🤖"
+                    placeholder="🦞"
                     className="w-12 px-2 py-2 text-center rounded-lg border dark:border-claude-darkBorder border-claude-border bg-transparent dark:text-claude-darkText text-claude-text text-lg"
                     maxLength={4}
                   />
@@ -324,34 +324,15 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         {/* Footer */}
         <div className="flex items-center justify-between px-5 py-4 border-t dark:border-claude-darkBorder border-claude-border">
           <div>
-            {!isMainAgent && !showDeleteConfirm && (
+            {!isMainAgent && (
               <button
                 type="button"
                 onClick={() => setShowDeleteConfirm(true)}
-                className="inline-flex items-center gap-1 px-3 py-2 text-sm font-medium rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                className="inline-flex items-center gap-1 text-sm text-red-500 hover:text-red-600 dark:hover:text-red-400 transition-colors"
               >
                 <TrashIcon className="h-4 w-4" />
-                {i18nService.t('delete') || 'Delete'}
+                {i18nService.t('delete')}
               </button>
-            )}
-            {showDeleteConfirm && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-red-500">{i18nService.t('confirmDelete') || 'Confirm?'}</span>
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  className="px-2 py-1 text-xs font-medium rounded bg-red-500 text-white hover:bg-red-600"
-                >
-                  {i18nService.t('delete') || 'Delete'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="px-2 py-1 text-xs font-medium rounded dark:text-claude-darkTextSecondary text-claude-textSecondary hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover"
-                >
-                  {i18nService.t('cancel') || 'Cancel'}
-                </button>
-              </div>
             )}
           </div>
           <div className="flex gap-2">
@@ -382,6 +363,44 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
           </div>
         </div>
       </div>
+
+      {/* Delete confirmation modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={() => setShowDeleteConfirm(false)}>
+          <div
+            className="w-full max-w-sm mx-4 rounded-2xl shadow-xl bg-white dark:bg-claude-darkSurface border dark:border-claude-darkBorder border-claude-border p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-col items-center text-center">
+              <div className="flex items-center justify-center w-12 h-12 rounded-full bg-red-50 dark:bg-red-900/20 mb-4">
+                <ExclamationTriangleIcon className="h-6 w-6 text-red-500" />
+              </div>
+              <h3 className="text-lg font-semibold dark:text-claude-darkText text-claude-text mb-2">
+                {i18nService.t('deleteConfirmTitle')}
+              </h3>
+              <p className="text-sm dark:text-claude-darkTextSecondary text-claude-textSecondary mb-6">
+                {(i18nService.t('deleteAgentConfirmMessage') || '').replace('{name}', name)}
+              </p>
+              <div className="flex w-full gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteConfirm(false)}
+                  className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg border dark:border-claude-darkBorder border-claude-border dark:text-claude-darkTextSecondary text-claude-textSecondary hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
+                >
+                  {i18nService.t('cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors"
+                >
+                  {i18nService.t('delete')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

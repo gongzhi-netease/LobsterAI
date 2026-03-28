@@ -68,7 +68,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
                 type="text"
                 value={icon}
                 onChange={(e) => setIcon(e.target.value)}
-                placeholder="🤖"
+                placeholder="🦞"
                 className="w-12 px-2 py-2 text-center rounded-lg border dark:border-claude-darkBorder border-claude-border bg-transparent dark:text-claude-darkText text-claude-text text-lg"
                 maxLength={4}
               />
