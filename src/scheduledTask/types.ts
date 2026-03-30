@@ -29,7 +29,6 @@ export interface AgentTurnPayload {
   kind: 'agentTurn';
   message: string;
   timeoutSeconds?: number;
-  model?: string;
 }
 
 export interface SystemEventPayload {
