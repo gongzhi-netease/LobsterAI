@@ -582,7 +582,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
           filteredSkills.map((skill) => (
             <div
               key={skill.id}
-              className="rounded-xl border border-border/50 bg-surface/50 p-3 transition-colors hover:border-primary/50 cursor-pointer"
+              className="rounded-xl border border-border bg-surface p-3 transition-colors hover:border-primary cursor-pointer"
               onClick={() => setSelectedSkill(skill)}
             >
               <div className="flex items-start justify-between mb-2">
@@ -716,7 +716,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                 {filteredMarketplaceSkills.map((skill) => (
               <div
                 key={skill.id}
-                className="rounded-xl border border-border/50 bg-surface/50 p-3 transition-colors hover:border-primary/50 cursor-pointer"
+                className="rounded-xl border border-border bg-surface p-3 transition-colors hover:border-primary cursor-pointer"
                 onClick={() => setSelectedMarketplaceSkill(skill)}
               >
                 <div className="flex items-start justify-between mb-2">

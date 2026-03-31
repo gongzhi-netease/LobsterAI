@@ -968,7 +968,7 @@ export const UserMessageItem: React.FC<{ message: CoworkMessage; skills: Skill[]
                         <img
                           src={`data:${img.mimeType};base64,${img.base64Data}`}
                           alt={img.name}
-                          className="max-h-48 max-w-[16rem] rounded-lg object-contain cursor-pointer border border-border/50 hover:border-primary/50 transition-colors"
+                          className="max-h-48 max-w-[16rem] rounded-lg object-contain cursor-pointer border border-border hover:border-primary transition-colors"
                           title={img.name}
                           onClick={() => setExpandedImage(`data:${img.mimeType};base64,${img.base64Data}`)}
                         />
@@ -1130,7 +1130,7 @@ const ThinkingBlock: React.FC<{
   }, [isCurrentlyStreaming]);
 
   return (
-    <div className="rounded-lg border border-border/50 overflow-hidden">
+    <div className="rounded-lg border border-border overflow-hidden">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-raised/50 transition-colors"
@@ -1183,7 +1183,7 @@ export const AssistantTurnBlock: React.FC<{
     if (!content.trim()) return null;
 
     return (
-      <div className="rounded-lg border border-border/40 bg-background/60 px-3 py-2">
+      <div className="rounded-lg border border-border bg-background px-3 py-2">
         <div className="flex items-center gap-2">
           {isError
             ? <ExclamationTriangleIcon className="h-4 w-4 text-secondary flex-shrink-0" />

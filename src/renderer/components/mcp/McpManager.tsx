@@ -406,7 +406,7 @@ const McpManager: React.FC = () => {
               return (
                 <div
                   key={server.id}
-                  className="rounded-xl border border-border/50 bg-surface/50 p-3 transition-colors hover:border-primary/50"
+                  className="rounded-xl border border-border bg-surface p-3 transition-colors hover:border-primary"
                 >
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex items-center gap-2 min-w-0">
@@ -522,7 +522,7 @@ const McpManager: React.FC = () => {
               filteredMarketplace.map((entry) => (
                 <div
                   key={entry.id}
-                  className="rounded-xl border border-border/50 bg-surface/50 p-3 transition-colors hover:border-primary/50"
+                  className="rounded-xl border border-border bg-surface p-3 transition-colors hover:border-primary"
                 >
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex items-center gap-2 min-w-0">
@@ -592,7 +592,7 @@ const McpManager: React.FC = () => {
             {filteredCustom.map((server) => (
                 <div
                   key={server.id}
-                  className="rounded-xl border border-border/50 bg-surface/50 p-3 transition-colors hover:border-primary/50"
+                  className="rounded-xl border border-border bg-surface p-3 transition-colors hover:border-primary"
                 >
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex items-center gap-2 min-w-0">
