@@ -812,27 +812,28 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                     <StopIcon className="h-5 w-5" />
                   </button>
                 ) : (
-                  <div className="relative flex items-stretch rounded-xl shadow-subtle hover:shadow-card overflow-hidden">
-                    <button
-                      type="button"
-                      onClick={handleSubmit}
-                      disabled={!canSubmit}
-                      className="p-2 bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                      aria-label="Send"
-                      title={currentSendShortcut !== 'Enter' ? getSendShortcutLabel(currentSendShortcut) : undefined}
-                    >
-                      <PaperAirplaneIcon className="h-5 w-5" />
-                    </button>
-                    <button
-                      ref={sendShortcutBtnRef}
-                      type="button"
-                      onClick={() => setShowSendShortcutMenu(!showSendShortcutMenu)}
-                      disabled={!canSubmit}
-                      className="px-1 flex items-center bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-l border-white/20"
-                      aria-label="Change send shortcut"
-                    >
-                      <ChevronDownIcon className="h-3 w-3" />
-                    </button>
+                  <div className="relative">
+                    <div className="flex items-stretch rounded-xl shadow-subtle hover:shadow-card">
+                      <button
+                        type="button"
+                        onClick={handleSubmit}
+                        disabled={!canSubmit}
+                        className="p-2 rounded-l-xl bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                        aria-label="Send"
+                        title={currentSendShortcut !== 'Enter' ? getSendShortcutLabel(currentSendShortcut) : undefined}
+                      >
+                        <PaperAirplaneIcon className="h-5 w-5" />
+                      </button>
+                      <button
+                        ref={sendShortcutBtnRef}
+                        type="button"
+                        onClick={() => setShowSendShortcutMenu(!showSendShortcutMenu)}
+                        className="px-1 flex items-center rounded-r-xl bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 border-l border-white/20"
+                        aria-label="Change send shortcut"
+                      >
+                        <ChevronDownIcon className="h-3 w-3" />
+                      </button>
+                    </div>
                     {showSendShortcutMenu && sendShortcutDropdown}
                   </div>
                 )}
@@ -878,27 +879,28 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                 <StopIcon className="h-4 w-4" />
               </button>
             ) : (
-              <div className="relative flex items-stretch flex-shrink-0 rounded-lg shadow-subtle hover:shadow-card overflow-hidden">
-                <button
-                  type="button"
-                  onClick={handleSubmit}
-                  disabled={!canSubmit}
-                  className="p-2 bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                  aria-label="Send"
-                  title={currentSendShortcut !== 'Enter' ? getSendShortcutLabel(currentSendShortcut) : undefined}
-                >
-                  <PaperAirplaneIcon className="h-4 w-4" />
-                </button>
-                <button
-                  ref={sendShortcutBtnRef}
-                  type="button"
-                  onClick={() => setShowSendShortcutMenu(!showSendShortcutMenu)}
-                  disabled={!canSubmit}
-                  className="px-1 flex items-center bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-l border-white/20"
-                  aria-label="Change send shortcut"
-                >
-                  <ChevronDownIcon className="h-3 w-3" />
-                </button>
+              <div className="relative flex-shrink-0">
+                <div className="flex items-stretch rounded-lg shadow-subtle hover:shadow-card">
+                  <button
+                    type="button"
+                    onClick={handleSubmit}
+                    disabled={!canSubmit}
+                    className="p-2 rounded-l-lg bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label="Send"
+                    title={currentSendShortcut !== 'Enter' ? getSendShortcutLabel(currentSendShortcut) : undefined}
+                  >
+                    <PaperAirplaneIcon className="h-4 w-4" />
+                  </button>
+                  <button
+                    ref={sendShortcutBtnRef}
+                    type="button"
+                    onClick={() => setShowSendShortcutMenu(!showSendShortcutMenu)}
+                    className="px-1 flex items-center rounded-r-lg bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 border-l border-white/20"
+                    aria-label="Change send shortcut"
+                  >
+                    <ChevronDownIcon className="h-3 w-3" />
+                  </button>
+                </div>
                 {showSendShortcutMenu && sendShortcutDropdown}
               </div>
             )}
