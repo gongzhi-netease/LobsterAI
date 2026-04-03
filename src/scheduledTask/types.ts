@@ -117,6 +117,11 @@ export interface ScheduledTaskRunEvent {
 export interface ScheduledTaskChannelOption {
   value: string;
   label: string;
+  /** For multi-instance platforms (feishu, dingtalk, qq), the account ID that
+   *  identifies a specific bot instance.  Passed as `delivery.accountId` so the
+   *  channel plugin can call `LarkClient.fromCfg(cfg, accountId)` instead of
+   *  falling back to the `default` account. */
+  accountId?: string;
 }
 
 export interface ScheduledTaskConversationOption {

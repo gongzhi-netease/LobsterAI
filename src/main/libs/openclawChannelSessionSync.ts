@@ -10,6 +10,7 @@ import type { IMStore } from '../im/imStore';
 import type { Platform } from '../im/types';
 import { PlatformRegistry } from '../../shared/platform';
 import { t } from '../i18n';
+import { session } from '@electron/remote';
 
 
 const LOBSTERAI_SESSION_PREFIX = 'lobsterai:';

@@ -44,6 +44,7 @@ interface FormState {
   payloadText: string;
   notifyChannel: string;
   notifyTo: string;
+  notifyAccountId: string | undefined;
   modelId: string;
 }
 
@@ -69,6 +70,7 @@ const DEFAULT_FORM_STATE: FormState = {
   payloadText: '',
   notifyChannel: 'none',
   notifyTo: '',
+  notifyAccountId: undefined,
   modelId: '',
 };
 
@@ -95,6 +97,7 @@ function createFormState(task?: ScheduledTask): FormState {
     payloadText: task.payload.kind === 'systemEvent' ? task.payload.text : task.payload.message,
     notifyChannel: task.delivery.channel || 'none',
     notifyTo: task.delivery.to || '',
+    notifyAccountId: task.delivery.accountId,
     modelId: task.payload.kind === 'agentTurn' ? (task.payload.model ?? '') : '',
   };
 }
@@ -256,6 +259,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
               mode: 'announce',
               channel: form.notifyChannel,
               ...(form.notifyTo ? { to: form.notifyTo } : {}),
+              ...(form.notifyAccountId ? { accountId: form.notifyAccountId } : {}),
             },
       };
 
@@ -521,7 +525,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
   };
 
   const isChannelUnsupported = (channelValue: string): boolean => {
-    return channelValue === 'qqbot' || channelValue === 'netease-bee' || channelValue === 'openclaw-weixin';
+    return channelValue === 'openclaw-weixin';
   };
 
   const getChannelDisplayLabel = (channelValue: string): string => {
@@ -552,7 +556,14 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
                 {selectedLogo && (
                   <img src={selectedLogo} alt="" className="w-5 h-5 object-contain rounded" />
                 )}
-                <span className="truncate">{getChannelDisplayLabel(form.notifyChannel)}</span>
+                <span className="truncate">{(() => {
+                  const base = getChannelDisplayLabel(form.notifyChannel);
+                  if (!form.notifyAccountId) return base;
+                  const selected = channelOptions.find(
+                    (o) => o.value === form.notifyChannel && o.accountId === form.notifyAccountId,
+                  );
+                  return selected ? `${base} · ${selected.label}` : base;
+                })()}</span>
               </span>
               <svg className={`w-4 h-4 ml-2 flex-shrink-0 transition-transform ${channelDropdownOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -563,7 +574,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
               <div className="absolute z-50 w-full mt-1 rounded-xl border border-border bg-surface shadow-lg overflow-hidden">
                 <div
                   className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-surface-raised transition-colors"
-                  onClick={() => { updateForm({ notifyChannel: 'none', notifyTo: '' }); setChannelDropdownOpen(false); }}
+                  onClick={() => { updateForm({ notifyChannel: 'none', notifyTo: '', notifyAccountId: undefined }); setChannelDropdownOpen(false); }}
                 >
                   <span className="w-5 h-5" />
                   <span className="text-sm text-foreground">{i18nService.t('scheduledTasksFormNotifyChannelNone')}</span>
@@ -572,18 +583,22 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
                   const unsupported = isChannelUnsupported(channel.value);
                   const logo = getChannelLogo(channel.value);
                   const platform = PlatformRegistry.platformOfChannel(channel.value);
-                  const displayName = platform ? (i18nService.t(platform) || channel.label) : channel.label;
+                  const platformLabel = platform ? (i18nService.t(platform) || channel.label) : channel.label;
+                  // For multi-instance options, show "平台 · 实例名"; for single-instance use platform label only.
+                  const displayName = channel.accountId ? `${platformLabel} · ${channel.label}` : platformLabel;
+                  const isActive = form.notifyChannel === channel.value &&
+                    (channel.accountId ? form.notifyAccountId === channel.accountId : !form.notifyAccountId);
                   return (
                     <div
-                      key={channel.value}
+                      key={`${channel.value}:${channel.accountId ?? ''}`}
                       className={`flex items-center gap-2 px-3 py-2 transition-colors ${
                         unsupported
                           ? 'opacity-50 cursor-not-allowed'
                           : 'cursor-pointer hover:bg-surface-raised'
-                      } ${form.notifyChannel === channel.value ? 'bg-surface-raised' : ''}`}
+                      } ${isActive ? 'bg-surface-raised' : ''}`}
                       onClick={() => {
                         if (!unsupported) {
-                          updateForm({ notifyChannel: channel.value, notifyTo: '' });
+                          updateForm({ notifyChannel: channel.value, notifyTo: '', notifyAccountId: channel.accountId });
                           setChannelDropdownOpen(false);
                         }
                       }}
