@@ -16,7 +16,7 @@ interface QQInstanceSettingsProps {
   instanceStatus: QQInstanceStatus | undefined;
   onConfigChange: (update: Partial<QQOpenClawConfig>) => void;
   onSave: (override?: Partial<QQOpenClawConfig>) => Promise<void>;
-  onRename: (newName: string) => void;
+  onRename: (newName: string) => Promise<boolean>;
   onDelete: () => void;
   onToggleEnabled: () => void;
   onTestConnectivity: () => void;
@@ -49,11 +49,14 @@ const QQInstanceSettings: React.FC<QQInstanceSettingsProps> = ({
     setEditingName(false);
   }, [instance.instanceId]);
 
-  const handleNameBlur = () => {
+  const handleNameBlur = async () => {
     setEditingName(false);
     const trimmed = nameValue.trim();
     if (trimmed && trimmed !== instance.instanceName) {
-      onRename(trimmed);
+      const success = await onRename(trimmed);
+      if (!success) {
+        setNameValue(instance.instanceName);
+      }
     } else {
       setNameValue(instance.instanceName);
     }

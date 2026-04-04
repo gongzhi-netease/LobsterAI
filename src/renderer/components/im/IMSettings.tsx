@@ -102,6 +102,18 @@ function deepSet(obj: Record<string, unknown>, path: string, value: unknown): Re
   return result;
 }
 
+
+// Generate a unique instance name by checking existing names
+function generateUniqueInstanceName(prefix: string, existingNames: string[]): string {
+  let index = existingNames.length + 1;
+  let name = `${prefix} ${index}`;
+  while (existingNames.includes(name)) {
+    index++;
+    name = `${prefix} ${index}`;
+  }
+  return name;
+}
+
 const IMSettings: React.FC = () => {
   const dispatch = useDispatch();
   const { config, status, isLoading } = useSelector((state: RootState) => state.im);
@@ -216,7 +228,7 @@ const IMSettings: React.FC = () => {
             clearInterval(feishuQrPollTimerRef.current!); feishuQrPollTimerRef.current = null;
             clearInterval(feishuQrCountdownTimerRef.current!); feishuQrCountdownTimerRef.current = null;
             // QR flow creates a new instance with the scanned credentials
-            const inst = await imService.addFeishuInstance('Feishu Bot');
+            const inst = await imService.addFeishuInstance(generateUniqueInstanceName('Feishu Bot', config.feishu.instances.map(i => i.instanceName)));
             if (inst) {
               await imService.updateFeishuInstanceConfig(inst.instanceId, {
                 appId: pollResult.appId,
@@ -1323,15 +1335,15 @@ const IMSettings: React.FC = () => {
             <img src={PlatformRegistry.logo('dingtalk')} alt="DingTalk" className="w-12 h-12 object-contain rounded-md mb-4 opacity-50" />
             <p className="text-sm text-secondary mb-4">
               {config.dingtalk.instances.length === 0
-                ? (language === 'zh' ? '尚未添加钉钉实例，点击下方按钮添加' : 'No DingTalk instances yet. Click below to add one.')
-                : (language === 'zh' ? '请在左侧选择一个钉钉实例' : 'Select a DingTalk instance from the sidebar.')}
+                ? i18nService.t('imDingTalkNoInstances')
+                : i18nService.t('imDingTalkSelectInstance')}
             </p>
             {config.dingtalk.instances.length < MAX_DINGTALK_INSTANCES && (
               <button
                 type="button"
                 onClick={async (e) => {
                   e.stopPropagation();
-                  const inst = await imService.addDingTalkInstance(`DingTalk Bot ${config.dingtalk.instances.length + 1}`);
+                  const inst = await imService.addDingTalkInstance(generateUniqueInstanceName('DingTalk Bot', config.dingtalk.instances.map(i => i.instanceName)));
                   if (inst) { setActiveDingTalkInstanceId(inst.instanceId); setDingtalkExpanded(true); }
                 }}
                 className="px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
@@ -1361,7 +1373,7 @@ const IMSettings: React.FC = () => {
                     i => i.instanceId !== activeDingTalkInstanceId && i.clientId === clientIdToCheck
                   );
                   if (duplicateClientId) {
-                    alert(i18nService.t('imInstanceClientIdDuplicate').replace('{name}', duplicateClientId.instanceName));
+                    window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('imInstanceClientIdDuplicate').replace('{name}', duplicateClientId.instanceName) }));
                     return;
                   }
                 }
@@ -1377,11 +1389,12 @@ const IMSettings: React.FC = () => {
                   i => i.instanceId !== activeDingTalkInstanceId && i.instanceName === newName
                 );
                 if (duplicateName) {
-                  alert(i18nService.t('imInstanceNameDuplicate').replace('{name}', newName));
-                  return;
+                  window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('imInstanceNameDuplicate').replace('{name}', newName) }));
+                  return false;
                 }
                 dispatch(setDingTalkInstanceConfig({ instanceId: activeDingTalkInstanceId, config: { instanceName: newName } as any }));
                 await imService.persistDingTalkInstanceConfig(activeDingTalkInstanceId, { instanceName: newName } as any);
+                return true;
               }}
               onDelete={async () => {
                 await imService.deleteDingTalkInstance(activeDingTalkInstanceId);
@@ -1413,15 +1426,15 @@ const IMSettings: React.FC = () => {
             <img src={PlatformRegistry.logo('feishu')} alt="Feishu" className="w-12 h-12 object-contain rounded-md mb-4 opacity-50" />
             <p className="text-sm text-secondary mb-4">
               {config.feishu.instances.length === 0
-                ? (language === 'zh' ? '尚未添加飞书实例，点击下方按钮添加' : 'No Feishu instances yet. Click below to add one.')
-                : (language === 'zh' ? '请在左侧选择一个飞书实例' : 'Select a Feishu instance from the sidebar.')}
+                ? i18nService.t('imFeishuNoInstances')
+                : i18nService.t('imFeishuSelectInstance')}
             </p>
             {config.feishu.instances.length < MAX_FEISHU_INSTANCES && (
               <button
                 type="button"
                 onClick={async (e) => {
                   e.stopPropagation();
-                  const inst = await imService.addFeishuInstance(`Feishu Bot ${config.feishu.instances.length + 1}`);
+                  const inst = await imService.addFeishuInstance(generateUniqueInstanceName('Feishu Bot', config.feishu.instances.map(i => i.instanceName)));
                   if (inst) { setActiveFeishuInstanceId(inst.instanceId); setFeishuExpanded(true); }
                 }}
                 className="px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
@@ -1451,7 +1464,7 @@ const IMSettings: React.FC = () => {
                     i => i.instanceId !== activeFeishuInstanceId && i.appId === appIdToCheck
                   );
                   if (duplicateAppId) {
-                    alert(i18nService.t('imInstanceAppIdDuplicate').replace('{name}', duplicateAppId.instanceName));
+                    window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('imInstanceAppIdDuplicate').replace('{name}', duplicateAppId.instanceName) }));
                     return;
                   }
                 }
@@ -1467,11 +1480,12 @@ const IMSettings: React.FC = () => {
                   i => i.instanceId !== activeFeishuInstanceId && i.instanceName === newName
                 );
                 if (duplicateName) {
-                  alert(i18nService.t('imInstanceNameDuplicate').replace('{name}', newName));
-                  return;
+                  window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('imInstanceNameDuplicate').replace('{name}', newName) }));
+                  return false;
                 }
                 dispatch(setFeishuInstanceConfig({ instanceId: activeFeishuInstanceId, config: { instanceName: newName } as any }));
                 await imService.persistFeishuInstanceConfig(activeFeishuInstanceId, { instanceName: newName } as any);
+                return true;
               }}
               onDelete={async () => {
                 await imService.deleteFeishuInstance(activeFeishuInstanceId);
@@ -1503,15 +1517,15 @@ const IMSettings: React.FC = () => {
             <img src={PlatformRegistry.logo('qq')} alt="QQ" className="w-12 h-12 object-contain rounded-md mb-4 opacity-50" />
             <p className="text-sm text-secondary mb-4">
               {config.qq.instances.length === 0
-                ? (language === 'zh' ? '尚未添加 QQ 实例，点击下方按钮添加' : 'No QQ instances yet. Click below to add one.')
-                : (language === 'zh' ? '请在左侧选择一个 QQ 实例' : 'Select a QQ instance from the sidebar.')}
+                ? i18nService.t('imQQNoInstances')
+                : i18nService.t('imQQSelectInstance')}
             </p>
             {config.qq.instances.length < MAX_QQ_INSTANCES && (
               <button
                 type="button"
                 onClick={async (e) => {
                   e.stopPropagation();
-                  const inst = await imService.addQQInstance(`QQ Bot ${config.qq.instances.length + 1}`);
+                  const inst = await imService.addQQInstance(generateUniqueInstanceName('QQ Bot', config.qq.instances.map(i => i.instanceName)));
                   if (inst) { setActiveQQInstanceId(inst.instanceId); setQqExpanded(true); }
                 }}
                 className="px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
@@ -1541,7 +1555,7 @@ const IMSettings: React.FC = () => {
                     i => i.instanceId !== activeQQInstanceId && i.appId === appIdToCheck
                   );
                   if (duplicateAppId) {
-                    alert(i18nService.t('imInstanceAppIdDuplicate').replace('{name}', duplicateAppId.instanceName));
+                    window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('imInstanceAppIdDuplicate').replace('{name}', duplicateAppId.instanceName) }));
                     return;
                   }
                 }
@@ -1557,11 +1571,12 @@ const IMSettings: React.FC = () => {
                   i => i.instanceId !== activeQQInstanceId && i.instanceName === newName
                 );
                 if (duplicateName) {
-                  alert(i18nService.t('imInstanceNameDuplicate').replace('{name}', newName));
-                  return;
+                  window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('imInstanceNameDuplicate').replace('{name}', newName) }));
+                  return false;
                 }
                 dispatch(setQQInstanceConfig({ instanceId: activeQQInstanceId, config: { instanceName: newName } as any }));
                 await imService.persistQQInstanceConfig(activeQQInstanceId, { instanceName: newName } as any);
+                return true;
               }}
               onDelete={async () => {
                 await imService.deleteQQInstance(activeQQInstanceId);

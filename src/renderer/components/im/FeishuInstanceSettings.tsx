@@ -17,7 +17,7 @@ interface FeishuInstanceSettingsProps {
   instanceStatus: FeishuInstanceStatus | undefined;
   onConfigChange: (update: Partial<FeishuOpenClawConfig>) => void;
   onSave: (override?: Partial<FeishuOpenClawConfig>) => Promise<void>;
-  onRename: (newName: string) => void;
+  onRename: (newName: string) => Promise<boolean>;
   onDelete: () => void;
   onToggleEnabled: () => void;
   onTestConnectivity: () => void;
@@ -224,11 +224,14 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
     setEditingName(false);
   }, [instance.instanceId]);
 
-  const handleNameBlur = () => {
+  const handleNameBlur = async () => {
     setEditingName(false);
     const trimmed = nameValue.trim();
     if (trimmed && trimmed !== instance.instanceName) {
-      onRename(trimmed);
+      const success = await onRename(trimmed);
+      if (!success) {
+        setNameValue(instance.instanceName);
+      }
     } else {
       setNameValue(instance.instanceName);
     }
