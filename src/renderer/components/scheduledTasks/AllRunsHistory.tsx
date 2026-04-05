@@ -81,15 +81,19 @@ const DateRangePicker: React.FC<DateRangePickerProps> = ({
         <div className="absolute right-0 top-full mt-1 z-50 rounded-xl shadow-popover bg-surface border border-border p-3 flex items-center gap-2">
           <input
             type="date"
+            lang={i18nService.getLanguage() === 'zh' ? 'zh-CN' : 'en-US'}
             value={startDate}
             onChange={(e) => onStartDateChange(e.target.value)}
+            placeholder={i18nService.getLanguage() === 'zh' ? '开始日期' : 'Start date'}
             className="px-2 py-1.5 text-sm rounded-lg border border-border bg-background text-foreground focus:outline-none focus:border-primary"
           />
           <span className="text-secondary text-sm">-</span>
           <input
             type="date"
+            lang={i18nService.getLanguage() === 'zh' ? 'zh-CN' : 'en-US'}
             value={endDate}
             onChange={(e) => onEndDateChange(e.target.value)}
+            placeholder={i18nService.getLanguage() === 'zh' ? '结束日期' : 'End date'}
             className="px-2 py-1.5 text-sm rounded-lg border border-border bg-background text-foreground focus:outline-none focus:border-primary"
           />
         </div>
