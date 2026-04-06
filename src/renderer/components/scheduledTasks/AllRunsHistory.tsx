@@ -1,4 +1,4 @@
-import { CalendarIcon, ClockIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { ClockIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 
@@ -6,6 +6,7 @@ import type { ScheduledTaskRunWithName } from '../../../scheduledTask/types';
 import { i18nService } from '../../services/i18n';
 import { scheduledTaskService } from '../../services/scheduledTask';
 import { RootState } from '../../store';
+import DateRangePicker from '../ui/DateRangePicker';
 import RunSessionModal from './RunSessionModal';
 import {
   formatDateGroup,
@@ -15,92 +16,6 @@ import {
 } from './utils';
 
 const PAGE_SIZE = 50;
-
-/* ------------------------------------------------------------------ */
-/*  DateRangePicker                                                   */
-/* ------------------------------------------------------------------ */
-
-interface DateRangePickerProps {
-  startDate: string;
-  endDate: string;
-  onStartDateChange: (v: string) => void;
-  onEndDateChange: (v: string) => void;
-  onClear: () => void;
-}
-
-const DateRangePicker: React.FC<DateRangePickerProps> = ({
-  startDate,
-  endDate,
-  onStartDateChange,
-  onEndDateChange,
-  onClear,
-}) => {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    if (open) document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [open]);
-
-  const hasRange = startDate || endDate;
-  const displayLabel = hasRange
-    ? `${startDate || '...'} - ${endDate || '...'}`
-    : i18nService.t('scheduledTasksHistoryTimeRange');
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={`flex items-center gap-1.5 px-3 py-2 text-sm rounded-xl border transition-colors shrink-0 ${
-          hasRange
-            ? 'border-primary text-primary bg-primary-muted'
-            : 'border-border text-secondary bg-surface hover:border-primary'
-        }`}
-      >
-        <CalendarIcon className="w-4 h-4" />
-        <span className="truncate max-w-[200px]">{displayLabel}</span>
-        {hasRange && (
-          <XMarkIcon
-            className="w-3.5 h-3.5 hover:text-destructive"
-            onClick={(e) => {
-              e.stopPropagation();
-              onClear();
-            }}
-          />
-        )}
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 rounded-xl shadow-popover bg-surface border border-border p-3 flex items-center gap-2">
-          <input
-            type="date"
-            lang={i18nService.getLanguage() === 'zh' ? 'zh-CN' : 'en-US'}
-            value={startDate}
-            onChange={(e) => onStartDateChange(e.target.value)}
-            placeholder={i18nService.getLanguage() === 'zh' ? '开始日期' : 'Start date'}
-            className="px-2 py-1.5 text-sm rounded-lg border border-border bg-background text-foreground focus:outline-none focus:border-primary"
-          />
-          <span className="text-secondary text-sm">-</span>
-          <input
-            type="date"
-            lang={i18nService.getLanguage() === 'zh' ? 'zh-CN' : 'en-US'}
-            value={endDate}
-            onChange={(e) => onEndDateChange(e.target.value)}
-            placeholder={i18nService.getLanguage() === 'zh' ? '结束日期' : 'End date'}
-            className="px-2 py-1.5 text-sm rounded-lg border border-border bg-background text-foreground focus:outline-none focus:border-primary"
-          />
-        </div>
-      )}
-    </div>
-  );
-};
 
 /* ------------------------------------------------------------------ */
 /*  HistoryRunRow                                                     */
