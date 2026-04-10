@@ -178,24 +178,23 @@ describe('OpenClawConfigSync runtime config output', () => {
       }],
     };
 
-    const firstSync = new OpenClawConfigSync({
-      ...baseDeps,
-      getIMSettings: () => ({ platformAgentBindings: {} }),
-    } as never);
-    expect(firstSync.sync('baseline').ok).toBe(true);
-
-    const secondSync = new OpenClawConfigSync({
+    let currentBindings: Record<string, string> = {};
+    const sync = new OpenClawConfigSync({
       ...baseDeps,
       getIMSettings: () => ({
-        platformAgentBindings: {
-          'dingtalk:b8a32c47-c852-4ad2-bbfa-631797fc56ea': 'worker-agent',
-        },
+        platformAgentBindings: currentBindings,
       }),
     } as never);
-    const result = secondSync.sync('binding-changed');
+
+    expect(sync.sync('baseline').ok).toBe(true);
+
+    currentBindings = {
+      'dingtalk:b8a32c47-c852-4ad2-bbfa-631797fc56ea': 'worker-agent',
+    };
+    const result = sync.sync('binding-changed');
 
     expect(result.ok).toBe(true);
-    expect(result.requiresGatewayRestart).toBe(true);
+    expect(result.bindingsChanged).toBe(true);
 
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(config.channels.dingtalk).not.toHaveProperty('_agentBinding');
