@@ -1,19 +1,20 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import SearchIcon from '../icons/SearchIcon';
-import TrashIcon from '../icons/TrashIcon';
-import PencilIcon from '../icons/PencilIcon';
-import ConnectorIcon from '../icons/ConnectorIcon';
+
+import { mcpCategories,mcpRegistry } from '../../data/mcpRegistry';
 import { i18nService } from '../../services/i18n';
 import { mcpService } from '../../services/mcp';
-import { setMcpServers } from '../../store/slices/mcpSlice';
 import { RootState } from '../../store';
-import { McpServerConfig, McpServerFormData, McpRegistryEntry, McpMarketplaceCategoryInfo } from '../../types/mcp';
-import { mcpRegistry, mcpCategories } from '../../data/mcpRegistry';
+import { setMcpServers } from '../../store/slices/mcpSlice';
+import { McpMarketplaceCategoryInfo,McpRegistryEntry, McpServerConfig, McpServerFormData } from '../../types/mcp';
+import Modal from '../common/Modal';
 import ErrorMessage from '../ErrorMessage';
+import ConnectorIcon from '../icons/ConnectorIcon';
+import PencilIcon from '../icons/PencilIcon';
+import SearchIcon from '../icons/SearchIcon';
+import TrashIcon from '../icons/TrashIcon';
 import Tooltip from '../ui/Tooltip';
 import McpServerFormModal from './McpServerFormModal';
-import Modal from '../common/Modal';
 
 const TRANSPORT_BADGE_COLORS: Record<string, string> = {
   stdio: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
@@ -84,12 +85,12 @@ const McpManager: React.FC = () => {
     return ids;
   }, [servers]);
 
-  const getRegistryEntryDescription = (entry: McpRegistryEntry): string => {
+  const getRegistryEntryDescription = useCallback((entry: McpRegistryEntry): string => {
     const remoteDescription = currentLanguage === 'zh' ? entry.description_zh : entry.description_en;
     if (remoteDescription) return remoteDescription;
     if (entry.descriptionKey) return i18nService.t(entry.descriptionKey);
     return '';
-  };
+  }, [currentLanguage]);
 
   const getStdioCommandSummary = (command?: string, args?: string[]): string => {
     if (!command) return '';
@@ -97,7 +98,7 @@ const McpManager: React.FC = () => {
     return `${command} ${args[args.length - 1]}`;
   };
 
-  const getRegistryEntryForServer = (server: McpServerConfig): McpRegistryEntry | undefined => {
+  const getRegistryEntryForServer = useCallback((server: McpServerConfig): McpRegistryEntry | undefined => {
     if (server.registryId) {
       return dynamicRegistry.find(entry => entry.id === server.registryId);
     }
@@ -107,7 +108,7 @@ const McpManager: React.FC = () => {
       && entry.transportType === server.transportType
       && entry.command === server.command
     ));
-  };
+  }, [dynamicRegistry]);
 
   const getTransportSummary = (server: McpServerConfig): string => {
     if (server.transportType === 'stdio') {
@@ -121,7 +122,7 @@ const McpManager: React.FC = () => {
     return server.url || '';
   };
 
-  const getInstalledDescription = (server: McpServerConfig): string => {
+  const getInstalledDescription = useCallback((server: McpServerConfig): string => {
     const persistedDescription = server.description?.trim();
     if (persistedDescription) return persistedDescription;
     const registryEntry = getRegistryEntryForServer(server);
@@ -130,7 +131,7 @@ const McpManager: React.FC = () => {
       if (registryDescription) return registryDescription;
     }
     return getTransportSummary(server);
-  };
+  }, [getRegistryEntryDescription, getRegistryEntryForServer]);
 
   const filteredInstalled = useMemo(() => {
     const query = searchQuery.toLowerCase();
@@ -139,7 +140,7 @@ const McpManager: React.FC = () => {
       server.name.toLowerCase().includes(query)
       || getInstalledDescription(server).toLowerCase().includes(query)
     );
-  }, [servers, searchQuery, dynamicRegistry, currentLanguage]);
+  }, [servers, searchQuery, getInstalledDescription]);
 
   const filteredCustom = useMemo(() => {
     const custom = servers.filter(s => !s.isBuiltIn);
@@ -164,7 +165,7 @@ const McpManager: React.FC = () => {
       entries = entries.filter(e => e.category === activeCategory);
     }
     return entries;
-  }, [searchQuery, activeCategory, dynamicRegistry, currentLanguage]);
+  }, [searchQuery, activeCategory, dynamicRegistry, getRegistryEntryDescription]);
 
   const handleToggleEnabled = async (serverId: string) => {
     const targetServer = servers.find(s => s.id === serverId);

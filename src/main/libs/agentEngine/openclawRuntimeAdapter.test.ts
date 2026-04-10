@@ -328,7 +328,6 @@ function createHistoryStore(messages: Array<Record<string, unknown>>) {
         session.messages.push(created);
         return created;
       },
-      updateSession: () => {},
       replaceConversationMessages: (sessionId: string, authoritative: Array<{ role: string; text: string }>) => {
         expect(sessionId).toBe(session.id);
         session.messages = session.messages.filter(
@@ -344,6 +343,7 @@ function createHistoryStore(messages: Array<Record<string, unknown>>) {
           });
         }
       },
+      updateSession: () => {},
     },
   };
 }

@@ -9,6 +9,7 @@ import {
 test('normalizes model-detected IM reminder requests into direct cron.add inputs', () => {
   const scheduleAtInput = '2026-03-15T16:30:00+08:00';
   const runAt = new Date(scheduleAtInput);
+  const expectedClock = '16:30';
   const parsed = normalizeDetectedScheduledTaskRequest(
     {
       shouldCreateTask: true,
@@ -28,7 +29,7 @@ test('normalizes model-detected IM reminder requests into direct cron.add inputs
   expect(parsed!.delayLabel).toBe('2分钟后');
   expect(parsed!.runAt.toISOString()).toBe(runAt.toISOString());
   expect(new Date(parsed!.scheduleAt).toISOString()).toBe(runAt.toISOString());
-  expect(parsed!.confirmationText).toMatch(new RegExp(`2分钟后（${String(runAt.getHours()).padStart(2, '0')}:${String(runAt.getMinutes()).padStart(2, '0')}）会提醒你喝饮料`, 'u'));
+  expect(parsed!.confirmationText).toMatch(new RegExp(`2分钟后（${expectedClock}）会提醒你喝饮料`, 'u'));
 });
 
 test('only uses heuristic as a cheap reminder candidate prefilter', () => {

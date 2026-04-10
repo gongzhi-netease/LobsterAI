@@ -1,6 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { contextBridge, ipcRenderer } from 'electron';
+
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import type { Platform } from '../shared/platform';
+import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -147,6 +150,11 @@ contextBridge.exposeInMainWorld('electron', {
         ipcRenderer.on('openclaw:engine:onProgress', handler);
         return () => ipcRenderer.removeListener('openclaw:engine:onProgress', handler);
       },
+    },
+    sessionPolicy: {
+      get: () => ipcRenderer.invoke(OpenClawSessionPolicyIpc.Get),
+      set: (config: { keepAlive: '1d' | '7d' | '30d' | '365d' }) =>
+        ipcRenderer.invoke(OpenClawSessionPolicyIpc.Set, config),
     },
   },
   agents: {
