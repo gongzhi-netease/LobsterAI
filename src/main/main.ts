@@ -84,6 +84,8 @@ import {
 import { getLogFilePath, getRecentMainLogEntries, initLogger } from './logger';
 import type { McpServerFormData } from './mcpStore';
 import { McpStore } from './mcpStore';
+import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
+import { loadOpenClawSessionPolicyConfig, saveOpenClawSessionPolicyConfig } from './openclawSessionPolicy/store';
 import { SkillManager } from './skillManager';
 import { getSkillServiceManager } from './skillServices';
 import { SqliteStore } from './sqliteStore';
@@ -868,6 +870,7 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
       engineManager: getOpenClawEngineManager(),
       getCoworkConfig: () => getCoworkStore().getConfig(),
       isEnterprise: () => !!getStore().get('enterprise_config'),
+      getOpenClawSessionPolicy: () => loadOpenClawSessionPolicyConfig(getStore()),
       getSkillsList: () => getSkillManager().listSkills().map(s => ({ id: s.id, enabled: s.enabled })),
       getTelegramOpenClawConfig: () => {
         try {
@@ -3126,6 +3129,35 @@ if (!gotTheLock) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to get config',
+      };
+    }
+  });
+
+  ipcMain.handle(OpenClawSessionPolicyIpc.Get, async () => {
+    try {
+      return {
+        success: true,
+        config: loadOpenClawSessionPolicyConfig(getStore()),
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get OpenClaw session policy',
+      };
+    }
+  });
+
+  ipcMain.handle(OpenClawSessionPolicyIpc.Set, async (_event, config: unknown) => {
+    try {
+      const savedConfig = saveOpenClawSessionPolicyConfig(getStore(), config);
+      return {
+        success: true,
+        config: savedConfig,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to save OpenClaw session policy',
       };
     }
   });

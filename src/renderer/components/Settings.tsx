@@ -1,54 +1,56 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import Modal from './common/Modal';
-import { configService } from '../services/config';
-import { apiService } from '../services/api';
-import { checkForAppUpdate } from '../services/appUpdate';
-import type { AppUpdateInfo } from '../services/appUpdate';
-import { themeService } from '../services/theme';
-import { i18nService, LanguageType } from '../services/i18n';
-import { decryptSecret, encryptWithPassword, decryptWithPassword, EncryptedPayload, PasswordEncryptedPayload } from '../services/encryption';
-import { coworkService } from '../services/cowork';
-import { APP_ID, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
-import ErrorMessage from './ErrorMessage';
-import { XMarkIcon, Cog6ToothIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, EnvelopeIcon, CpuChipIcon, InformationCircleIcon, UserCircleIcon, ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline';
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
-import PlusCircleIcon from './icons/PlusCircleIcon';
-import TrashIcon from './icons/TrashIcon';
-import PencilIcon from './icons/PencilIcon';
-import BrainIcon from './icons/BrainIcon';
+import { ArrowTopRightOnSquareIcon,ChatBubbleLeftIcon, CheckCircleIcon, Cog6ToothIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, InformationCircleIcon, SignalIcon, UserCircleIcon, XCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import React, { useCallback,useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { setAvailableModels } from '../store/slices/modelSlice';
+
+import { ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
+import { type AppConfig, defaultConfig, getCustomProviderDefaultName,getProviderDisplayName,getVisibleProviders, isCustomProvider } from '../config';
+import { APP_ID, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
+import { apiService } from '../services/api';
+import type { AppUpdateInfo } from '../services/appUpdate';
+import { checkForAppUpdate } from '../services/appUpdate';
+import { configService } from '../services/config';
+import { coworkService } from '../services/cowork';
+import { decryptSecret, decryptWithPassword, EncryptedPayload, encryptWithPassword, PasswordEncryptedPayload } from '../services/encryption';
+import { i18nService, LanguageType } from '../services/i18n';
+import { imService } from '../services/im';
+import { themeService } from '../services/theme';
 import { selectCoworkConfig } from '../store/selectors/coworkSelectors';
-import ThemedSelect from './ui/ThemedSelect';
+import { setAvailableModels } from '../store/slices/modelSlice';
 import type {
   CoworkAgentEngine,
-  OpenClawEngineStatus,
-  CoworkUserMemoryEntry,
   CoworkMemoryStats,
+  CoworkUserMemoryEntry,
+  OpenClawEngineStatus,
+  OpenClawSessionKeepAlive as OpenClawSessionKeepAliveValue,
 } from '../types/cowork';
-import IMSettings from './im/IMSettings';
-import { imService } from '../services/im';
-import EmailSkillConfig from './skills/EmailSkillConfig';
-import { ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
-import { defaultConfig, type AppConfig, getVisibleProviders, isCustomProvider, getCustomProviderDefaultName,getProviderDisplayName } from '../config';
+import Modal from './common/Modal';
+import ErrorMessage from './ErrorMessage';
+import BrainIcon from './icons/BrainIcon';
+import PencilIcon from './icons/PencilIcon';
+import PlusCircleIcon from './icons/PlusCircleIcon';
 import {
-  OpenAIIcon,
+  AnthropicIcon,
+  CustomProviderIcon,
   DeepSeekIcon,
   GeminiIcon,
-  AnthropicIcon,
-  MoonshotIcon,
-  ZhipuIcon,
+  GitHubCopilotIcon,
   MiniMaxIcon,
-  YouDaoZhiYunIcon,
+  MoonshotIcon,
+  OllamaIcon,
+  OpenAIIcon,
+  OpenRouterIcon,
   QwenIcon,
-  XiaomiIcon,
   StepfunIcon,
   VolcengineIcon,
-  OpenRouterIcon,
-  OllamaIcon,
-  GitHubCopilotIcon,
-  CustomProviderIcon,
+  XiaomiIcon,
+  YouDaoZhiYunIcon,
+  ZhipuIcon,
 } from './icons/providers';
+import TrashIcon from './icons/TrashIcon';
+import IMSettings from './im/IMSettings';
+import EmailSkillConfig from './skills/EmailSkillConfig';
+import ThemedSelect from './ui/ThemedSelect';
 
 type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkMemory' | 'coworkAgent' | 'shortcuts' | 'im' | 'email' | 'about';
 
@@ -763,6 +765,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [coworkMemoryEnabled, setCoworkMemoryEnabled] = useState<boolean>(coworkConfig.memoryEnabled ?? true);
   const [coworkMemoryLlmJudgeEnabled, setCoworkMemoryLlmJudgeEnabled] = useState<boolean>(coworkConfig.memoryLlmJudgeEnabled ?? false);
   const [skipMissedJobs, setSkipMissedJobs] = useState<boolean>(coworkConfig.skipMissedJobs ?? false);
+  const [openClawSessionKeepAlive, setOpenClawSessionKeepAlive] = useState<OpenClawSessionKeepAliveValue>(
+    coworkConfig.openClawSessionPolicy?.keepAlive ?? '30d',
+  );
   const [coworkMemoryEntries, setCoworkMemoryEntries] = useState<CoworkUserMemoryEntry[]>([]);
   const [coworkMemoryStats, setCoworkMemoryStats] = useState<CoworkMemoryStats | null>(null);
   const [coworkMemoryListLoading, setCoworkMemoryListLoading] = useState<boolean>(false);
@@ -781,11 +786,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setCoworkMemoryEnabled(coworkConfig.memoryEnabled ?? true);
     setCoworkMemoryLlmJudgeEnabled(coworkConfig.memoryLlmJudgeEnabled ?? false);
     setSkipMissedJobs(coworkConfig.skipMissedJobs ?? false);
+    setOpenClawSessionKeepAlive(coworkConfig.openClawSessionPolicy?.keepAlive ?? '30d');
   }, [
     coworkConfig.agentEngine,
     coworkConfig.memoryEnabled,
     coworkConfig.memoryLlmJudgeEnabled,
     coworkConfig.skipMissedJobs,
+    coworkConfig.openClawSessionPolicy?.keepAlive,
   ]);
 
   useEffect(() => () => {
@@ -1401,7 +1408,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const hasCoworkConfigChanges = coworkAgentEngine !== coworkConfig.agentEngine
     || coworkMemoryEnabled !== coworkConfig.memoryEnabled
     || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled
-    || skipMissedJobs !== (coworkConfig.skipMissedJobs ?? false);
+    || skipMissedJobs !== (coworkConfig.skipMissedJobs ?? false)
+    || openClawSessionKeepAlive !== (coworkConfig.openClawSessionPolicy?.keepAlive ?? '30d');
   const isOpenClawAgentEngine = coworkAgentEngine === 'openclaw';
 
   const openClawProgressPercent = useMemo(() => {
@@ -1760,6 +1768,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
           skipMissedJobs,
         });
         if (!updated) {
+          throw new Error(i18nService.t('coworkConfigSaveFailed'));
+        }
+        const savedSessionPolicy = await coworkService.updateSessionPolicy({
+          keepAlive: openClawSessionKeepAlive,
+        });
+        if (!savedSessionPolicy) {
           throw new Error(i18nService.t('coworkConfigSaveFailed'));
         }
       }
