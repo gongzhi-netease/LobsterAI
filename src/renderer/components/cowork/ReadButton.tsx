@@ -94,7 +94,7 @@ const ReadButton: React.FC<ReadButtonProps> = ({ content, visible }) => {
       onClick={handleClick}
       className={`p-1.5 rounded-md hover:bg-surface-raised transition-all duration-200 ${
         visible || isActive ? 'opacity-100' : 'opacity-0 pointer-events-none'
-      } ${isActive ? 'text-primary' : 'text-[var(--icon-secondary)]'}`}
+      } ${isPlaying ? 'text-primary' : 'text-[var(--icon-secondary)]'}`}
       title={title}
     >
       {icon}
