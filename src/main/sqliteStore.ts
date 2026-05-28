@@ -1,10 +1,16 @@
+import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import { app } from 'electron';
 import { EventEmitter } from 'events';
-import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import Database from 'better-sqlite3';
+
+import { AgentId, DefaultAgentAvatarIcon, DefaultAgentProfile, LegacyAgentName, normalizeAgentAvatarIcon } from '../shared/agent';
 import { DB_FILENAME } from './appConstants';
+import {
+  openSqliteDatabaseWithRecovery,
+  SqliteBackupManager,
+} from './libs/sqliteBackup/sqliteBackupManager';
 
 type ChangePayload<T = unknown> = {
   key: string;
@@ -13,29 +19,44 @@ type ChangePayload<T = unknown> = {
 };
 
 const USER_MEMORIES_MIGRATION_KEY = 'userMemories.migration.v1.completed';
+const AGENT_WORKING_DIRECTORY_BACKFILL_KEY = 'agents.workingDirectoryBackfill.v1.completed';
 
 export class SqliteStore {
   private db: Database.Database;
   private dbPath: string;
   private emitter = new EventEmitter();
+  private didRunMigration = false;
 
   private constructor(db: Database.Database, dbPath: string) {
     this.db = db;
     this.dbPath = dbPath;
   }
 
-  static create(userDataPath?: string): SqliteStore {
+  static async create(userDataPath?: string): Promise<SqliteStore> {
     const basePath = userDataPath ?? app.getPath('userData');
     const dbPath = path.join(basePath, DB_FILENAME);
 
-    const db = new Database(dbPath);
+    let db = openSqliteDatabaseWithRecovery(basePath, dbPath);
 
-    // WAL mode: persists across connections, never reverts. NORMAL sync is safe under WAL
-    // (no data loss on OS crash; power-loss risk is the same as DELETE mode).
-    db.pragma('journal_mode = WAL');
-    db.pragma('synchronous = NORMAL');
-    db.pragma('cache_size = -8000'); // 8 MB; negative value = kibibytes
-    db.pragma('wal_autocheckpoint = 1000'); // checkpoint every ~4 MB of WAL writes
+    const autoBackupEnabled = SqliteStore.readSqliteAutoBackupEnabled(db);
+    if (autoBackupEnabled) {
+      const backupManager = new SqliteBackupManager(basePath);
+      const health = backupManager.verifyDatabaseHealth(db);
+      if (!health.ok) {
+        const healthReason = 'reason' in health ? health.reason : 'unknown reason';
+        console.warn(`[SqliteBackup] Startup health check failed: ${healthReason}`);
+        try {
+          db.close();
+        } catch {
+          // Ignore close failures before restore.
+        }
+        const restoreResult = backupManager.restoreLatestBackup(dbPath);
+        if (!restoreResult.restored) {
+          console.warn('[SqliteBackup] No valid snapshot was restored; continuing with database reinitialization');
+        }
+        db = openSqliteDatabaseWithRecovery(basePath, dbPath);
+      }
+    }
 
     const store = new SqliteStore(db, dbPath);
     store.initializeTables(basePath);
@@ -59,8 +80,10 @@ export class SqliteStore {
         claude_session_id TEXT,
         status TEXT NOT NULL DEFAULT 'idle',
         pinned INTEGER NOT NULL DEFAULT 0,
+        pin_order INTEGER,
         cwd TEXT NOT NULL,
         system_prompt TEXT NOT NULL DEFAULT '',
+        model_override TEXT NOT NULL DEFAULT '',
         execution_mode TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -145,9 +168,12 @@ export class SqliteStore {
         system_prompt TEXT NOT NULL DEFAULT '',
         identity TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL DEFAULT '',
+        working_directory TEXT NOT NULL DEFAULT '',
         icon TEXT NOT NULL DEFAULT '',
         skill_ids TEXT NOT NULL DEFAULT '[]',
         enabled INTEGER NOT NULL DEFAULT 1,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        pin_order INTEGER,
         is_default INTEGER NOT NULL DEFAULT 0,
         source TEXT NOT NULL DEFAULT 'custom',
         preset_id TEXT NOT NULL DEFAULT '',
@@ -170,6 +196,76 @@ export class SqliteStore {
       );
     `);
 
+    // Create user plugins table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS user_plugins (
+        plugin_id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        spec TEXT NOT NULL,
+        registry TEXT,
+        version TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        installed_at INTEGER NOT NULL
+      );
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS subagent_runs (
+        id TEXT PRIMARY KEY,
+        parent_session_id TEXT NOT NULL,
+        session_key TEXT,
+        agent_id TEXT,
+        task TEXT,
+        label TEXT,
+        status TEXT NOT NULL DEFAULT 'running',
+        created_at INTEGER NOT NULL,
+        ended_at INTEGER
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent_session_id
+      ON subagent_runs(parent_session_id);
+    `);
+
+    // Subagent messages table — stores fetched conversation history locally
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS subagent_messages (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        metadata TEXT,
+        created_at INTEGER NOT NULL,
+        sequence INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_subagent_messages_run_id
+      ON subagent_messages(run_id);
+    `);
+
+    // Migration: add messages_persisted column to subagent_runs
+    try {
+      const subagentCols = this.db.pragma('table_info(subagent_runs)') as Array<{ name: string }>;
+      if (!subagentCols.some(c => c.name === 'messages_persisted')) {
+        this.db.exec('ALTER TABLE subagent_runs ADD COLUMN messages_persisted INTEGER NOT NULL DEFAULT 0;');
+        this.didRunMigration = true;
+      }
+    } catch {
+      // Migration not needed
+    }
+
+    // Migration: add config column to user_plugins
+    try {
+      const pluginCols = this.db.pragma('table_info(user_plugins)') as Array<{ name: string }>;
+      if (!pluginCols.some(c => c.name === 'config')) {
+        this.db.exec('ALTER TABLE user_plugins ADD COLUMN config TEXT;');
+        this.didRunMigration = true;
+      }
+    } catch {
+      // Migration not needed
+    }
+
     // Migrations - safely add columns if they don't exist
     try {
       // Check if execution_mode column exists
@@ -178,14 +274,27 @@ export class SqliteStore {
 
       if (!colNames.includes('execution_mode')) {
         this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN execution_mode TEXT;');
+        this.didRunMigration = true;
       }
 
       if (!colNames.includes('pinned')) {
         this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;');
+        this.didRunMigration = true;
+      }
+
+      if (!colNames.includes('pin_order')) {
+        this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN pin_order INTEGER;');
+        this.didRunMigration = true;
       }
 
       if (!colNames.includes('active_skill_ids')) {
         this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN active_skill_ids TEXT;');
+        this.didRunMigration = true;
+      }
+
+      if (!colNames.includes('model_override')) {
+        this.db.exec("ALTER TABLE cowork_sessions ADD COLUMN model_override TEXT NOT NULL DEFAULT '';");
+        this.didRunMigration = true;
       }
 
       // Migration: Add sequence column to cowork_messages
@@ -194,6 +303,7 @@ export class SqliteStore {
 
       if (!msgColNames.includes('sequence')) {
         this.db.exec('ALTER TABLE cowork_messages ADD COLUMN sequence INTEGER');
+        this.didRunMigration = true;
 
         // Assign sequence numbers to existing messages ordered by created_at + ROWID
         this.db.exec(`
@@ -213,7 +323,16 @@ export class SqliteStore {
     }
 
     try {
-      this.db.exec('UPDATE cowork_sessions SET pinned = 0 WHERE pinned IS NULL;');
+      const pinnedResult = this.db.prepare('UPDATE cowork_sessions SET pinned = 0 WHERE pinned IS NULL;').run();
+      const pinOrderResult = this.db
+        .prepare('UPDATE cowork_sessions SET pin_order = updated_at WHERE pinned = 1 AND pin_order IS NULL;')
+        .run();
+      const unpinnedResult = this.db
+        .prepare('UPDATE cowork_sessions SET pin_order = NULL WHERE pinned = 0 AND pin_order IS NOT NULL;')
+        .run();
+      if (pinnedResult.changes > 0 || pinOrderResult.changes > 0 || unpinnedResult.changes > 0) {
+        this.didRunMigration = true;
+      }
     } catch {
       // Column might not exist yet.
     }
@@ -226,14 +345,52 @@ export class SqliteStore {
         this.db.exec(
           "ALTER TABLE cowork_sessions ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main';",
         );
+        this.didRunMigration = true;
       }
     } catch {
       // Column already exists or migration not needed.
     }
 
-    // Migration: Ensure default 'main' agent exists
+    // Migration: Add working_directory column to agents
     try {
-      const mainAgent = this.db.prepare("SELECT id FROM agents WHERE id = 'main'").get();
+      const agentCols = this.db.pragma('table_info(agents)') as Array<{ name: string }>;
+      const agentColNames = agentCols.map(c => c.name);
+      if (!agentColNames.includes('working_directory')) {
+        this.db.exec("ALTER TABLE agents ADD COLUMN working_directory TEXT NOT NULL DEFAULT '';");
+        this.didRunMigration = true;
+      }
+      if (!agentColNames.includes('pinned')) {
+        this.db.exec('ALTER TABLE agents ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;');
+        this.didRunMigration = true;
+      }
+      if (!agentColNames.includes('pin_order')) {
+        this.db.exec('ALTER TABLE agents ADD COLUMN pin_order INTEGER;');
+        this.didRunMigration = true;
+      }
+    } catch {
+      // Column already exists or migration not needed.
+    }
+
+    try {
+      const pinnedAgentResult = this.db.prepare('UPDATE agents SET pinned = 0 WHERE pinned IS NULL;').run();
+      const pinOrderAgentResult = this.db
+        .prepare('UPDATE agents SET pin_order = updated_at WHERE pinned = 1 AND pin_order IS NULL;')
+        .run();
+      const unpinnedAgentResult = this.db
+        .prepare('UPDATE agents SET pin_order = NULL WHERE pinned = 0 AND pin_order IS NOT NULL;')
+        .run();
+      if (pinnedAgentResult.changes > 0 || pinOrderAgentResult.changes > 0 || unpinnedAgentResult.changes > 0) {
+        this.didRunMigration = true;
+      }
+    } catch {
+      // Columns might not exist yet.
+    }
+
+    // Migration: Ensure default agent exists and legacy display values are upgraded.
+    try {
+      const mainAgent = this.db
+        .prepare('SELECT id, name, icon FROM agents WHERE id = ?')
+        .get(AgentId.Main) as { id: string; name: string; icon: string } | undefined;
       if (!mainAgent) {
         const now = Date.now();
         // Read existing systemPrompt from cowork_config to inherit into main agent
@@ -252,13 +409,71 @@ export class SqliteStore {
           .prepare(
             `
           INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
-          VALUES ('main', 'main', '', ?, '', '', '', '[]', 1, 1, 'custom', '', ?, ?)
+          VALUES (?, ?, '', ?, '', '', ?, '[]', 1, 1, 'custom', '', ?, ?)
         `,
           )
-          .run(existingSystemPrompt, now, now);
+          .run(AgentId.Main, DefaultAgentProfile.Name, existingSystemPrompt, DefaultAgentAvatarIcon, now, now);
+      } else {
+        const normalizedName = mainAgent.name.trim();
+        const shouldUpgradeName = !normalizedName || normalizedName.toLowerCase() === LegacyAgentName.Main;
+        if (shouldUpgradeName) {
+          this.db
+            .prepare('UPDATE agents SET name = ?, updated_at = ? WHERE id = ?')
+            .run(DefaultAgentProfile.Name, Date.now(), AgentId.Main);
+          this.didRunMigration = true;
+        }
       }
     } catch (error) {
-      console.warn('Failed to ensure main agent:', error);
+      console.warn('[SqliteStore] failed to ensure default agent:', error);
+    }
+
+    // Migration: Replace legacy text/emoji/designed agent icons with the latest SVG avatar format.
+    try {
+      const rows = this.db
+        .prepare('SELECT id, icon FROM agents')
+        .all() as Array<{ id: string; icon: string }>;
+      const updates = rows
+        .map((row) => ({ id: row.id, icon: normalizeAgentAvatarIcon(row.icon) }))
+        .filter((row, index) => row.icon !== rows[index].icon);
+
+      if (updates.length > 0) {
+        const now = Date.now();
+        const updateIcon = this.db.prepare('UPDATE agents SET icon = ?, updated_at = ? WHERE id = ?');
+        const migrateIcons = this.db.transaction((agents: Array<{ id: string; icon: string }>) => {
+          for (const agent of agents) {
+            updateIcon.run(agent.icon, now, agent.id);
+          }
+        });
+        migrateIcons(updates);
+        this.didRunMigration = true;
+      }
+    } catch (error) {
+      console.warn('[SqliteStore] failed to migrate agent avatar icons:', error);
+    }
+
+    // Migration: Backfill agent working directories from the legacy global cwd once.
+    try {
+      if (this.get<string>(AGENT_WORKING_DIRECTORY_BACKFILL_KEY) !== '1') {
+        const cwdRow = this.db
+          .prepare("SELECT value FROM cowork_config WHERE key = 'workingDirectory'")
+          .get() as { value: string } | undefined;
+        const legacyWorkingDirectory = cwdRow?.value?.trim() || '';
+        if (legacyWorkingDirectory) {
+          const result = this.db
+            .prepare(
+              `UPDATE agents
+               SET working_directory = ?, updated_at = ?
+               WHERE TRIM(COALESCE(working_directory, '')) = ''`,
+            )
+            .run(legacyWorkingDirectory, Date.now());
+          if (result.changes > 0) {
+            this.didRunMigration = true;
+          }
+        }
+        this.set(AGENT_WORKING_DIRECTORY_BACKFILL_KEY, '1');
+      }
+    } catch (error) {
+      console.warn('[SqliteStore] failed to backfill agent working directories:', error);
     }
 
     try {
@@ -270,6 +485,7 @@ export class SqliteStore {
         SET value = 'local'
         WHERE key = 'executionMode' AND value = 'container';
       `);
+      this.didRunMigration = true;
     } catch (error) {
       console.warn('Failed to migrate cowork execution mode:', error);
     }
@@ -330,8 +546,29 @@ export class SqliteStore {
     return this.db;
   }
 
+  getDbPath(): string {
+    return this.dbPath;
+  }
+
+  getDidRunMigration(): boolean {
+    return this.didRunMigration;
+  }
+
   close(): void {
     this.db.close();
+  }
+
+  private static readSqliteAutoBackupEnabled(db: Database.Database): boolean {
+    try {
+      const row = db.prepare("SELECT value FROM kv WHERE key = 'app_config'").get() as
+        | { value: string }
+        | undefined;
+      if (!row?.value) return false;
+      const parsed = JSON.parse(row.value) as { sqliteAutoBackupEnabled?: boolean };
+      return parsed.sqliteAutoBackupEnabled === true;
+    } catch {
+      return false;
+    }
   }
 
   private tryReadLegacyMemoryText(): string {

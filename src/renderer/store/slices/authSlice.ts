@@ -1,10 +1,13 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 export interface UserProfile {
-  userId: string;
-  phone: string;
+  yid: string;
   nickname: string;
-  avatarUrl: string;
+  avatarUrl: string | null;
+  phone?: string | null;   // exchange endpoint only, always null currently
+  userId?: string;         // exchange endpoint only (string "6")
+  id?: number;             // profile endpoint only (number 6)
+  status?: number;         // profile endpoint only
 }
 
 export interface UserQuota {
@@ -13,6 +16,7 @@ export interface UserQuota {
   creditsLimit: number;       // total credits limit
   creditsUsed: number;        // credits used
   creditsRemaining: number;   // credits remaining
+  hasPaidCredits?: boolean;   // true if user has subscription, boost, or invitation credits
 }
 
 export interface CreditItem {

@@ -3,14 +3,14 @@
  * Configuration form for a single Feishu bot instance in multi-instance mode
  */
 
-import React, { useState, useRef, useEffect } from 'react';
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
 import { ArrowPathIcon, CheckCircleIcon, SignalIcon, XCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import TrashIcon from '../icons/TrashIcon';
-import { QRCodeSVG } from 'qrcode.react';
-import type { FeishuInstanceConfig, FeishuInstanceStatus, FeishuOpenClawConfig, IMConnectivityTestResult } from '../../types/im';
-import { i18nService } from '../../services/i18n';
 import { PlatformRegistry } from '@shared/platform';
+import { QRCodeSVG } from 'qrcode.react';
+import React, { useEffect,useRef, useState } from 'react';
+
+import { i18nService } from '../../services/i18n';
+import type { FeishuInstanceConfig, FeishuInstanceStatus, FeishuOpenClawConfig, IMConnectivityTestResult } from '../../types/im';
 
 interface FeishuInstanceSettingsProps {
   instance: FeishuInstanceConfig;
@@ -18,12 +18,11 @@ interface FeishuInstanceSettingsProps {
   onConfigChange: (update: Partial<FeishuOpenClawConfig>) => void;
   onSave: (override?: Partial<FeishuOpenClawConfig>) => Promise<void>;
   onRename: (newName: string) => void;
-  onDelete: () => void;
-  onToggleEnabled: () => void;
   onTestConnectivity: () => void;
   testingPlatform: string | null;
   connectivityResults: Record<string, IMConnectivityTestResult>;
   language: 'zh' | 'en';
+  headerLeading?: React.ReactNode;
 }
 
 // Reusable guide card component for platform setup instructions
@@ -132,12 +131,11 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
   onConfigChange,
   onSave,
   onRename,
-  onDelete,
-  onToggleEnabled,
   onTestConnectivity,
   testingPlatform,
   connectivityResults,
   language,
+  headerLeading,
 }) => {
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [allowedUserIdInput, setAllowedUserIdInput] = useState('');
@@ -154,6 +152,8 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
   const qrPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const qrCountdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isMountedRef = useRef(true);
+  const hasCredentials = !!(instance.appId && instance.appSecret);
+  const shouldShowQrPanel = !hasCredentials || (qrStatus !== 'idle' && qrStatus !== 'success');
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -222,7 +222,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
   React.useEffect(() => {
     setNameValue(instance.instanceName);
     setEditingName(false);
-  }, [instance.instanceId]);
+  }, [instance.instanceId, instance.instanceName]);
 
   const handleNameBlur = () => {
     setEditingName(false);
@@ -236,16 +236,10 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
 
   return (
     <div className="space-y-3">
-      {/* Instance Header: Name, Status, Enable Toggle, Delete */}
+      {/* Instance Header: Name and Status */}
       <div className="flex items-center gap-3 pb-3 border-b border-border-subtle">
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-surface border border-border-subtle p-1">
-            <img
-              src={PlatformRegistry.logo('feishu')}
-              alt="Feishu"
-              className="w-4 h-4 object-contain rounded"
-            />
-          </div>
+          {headerLeading}
           {editingName ? (
             <input
               type="text"
@@ -280,41 +274,10 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
             ? i18nService.t('connected')
             : i18nService.t('disconnected')}
         </div>
-
-        {/* Enable toggle */}
-        <button
-          type="button"
-          onClick={onToggleEnabled}
-          disabled={!instance.enabled && !(instance.appId && instance.appSecret)}
-          className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-            instance.enabled
-              ? (instanceStatus?.connected ? 'bg-green-500' : 'bg-yellow-500')
-              : 'bg-gray-400 dark:bg-gray-600'
-          } ${!instance.enabled && !(instance.appId && instance.appSecret) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-          title={instance.enabled
-            ? (language === 'zh' ? '禁用此实例' : 'Disable this instance')
-            : (!(instance.appId && instance.appSecret)
-              ? i18nService.t('imInstanceFillCredentials')
-              : (language === 'zh' ? '启用此实例' : 'Enable this instance'))}
-        >
-          <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-            instance.enabled ? 'translate-x-4' : 'translate-x-0'
-          }`} />
-        </button>
-
-        {/* Delete button */}
-        <button
-          type="button"
-          onClick={onDelete}
-          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-red-500 hover:bg-red-500/10 rounded-lg transition-colors flex-shrink-0"
-          title={language === 'zh' ? '删除此实例' : 'Delete this instance'}
-        >
-          <TrashIcon className="h-4 w-4" />
-          {language === 'zh' ? '删除' : 'Delete'}
-        </button>
       </div>
 
       {/* Scan QR code section */}
+      {shouldShowQrPanel && (
       <div className="rounded-lg border border-dashed border-border-subtle p-4 text-center space-y-3">
         {(qrStatus === 'idle' || qrStatus === 'error') && (
           <>
@@ -362,8 +325,10 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
           </div>
         )}
       </div>
+      )}
 
       {/* Divider */}
+      {shouldShowQrPanel && (
       <div className="relative flex items-center">
         <div className="flex-1 border-t border-border-subtle" />
         <span className="px-3 text-xs text-secondary whitespace-nowrap">
@@ -371,6 +336,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
         </span>
         <div className="flex-1 border-t border-border-subtle" />
       </div>
+      )}
 
       {/* Guide */}
       <PlatformGuide
@@ -384,7 +350,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
       {/* App ID */}
       <div className="space-y-1.5">
         <label className="block text-xs font-medium text-secondary">
-          App ID
+          App ID<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
         </label>
         <div className="relative">
           <input
@@ -413,7 +379,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
       {/* App Secret */}
       <div className="space-y-1.5">
         <label className="block text-xs font-medium text-secondary">
-          App Secret
+          App Secret<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
         </label>
         <div className="relative">
           <input

@@ -1,5 +1,8 @@
+import path from 'node:path';
+
 import { describe, expect, test } from 'vitest';
 
+import { DefaultAgentAvatarIcon } from '../../shared/agent/avatar';
 import {
   buildAgentEntry,
   buildManagedAgentEntries,
@@ -17,6 +20,7 @@ describe('buildAgentEntry', () => {
       systemPrompt: '',
       identity: '',
       model: 'lobsterai-server/deepseek-v3.2',
+      workingDirectory: '',
       icon: '',
       skillIds: [],
       enabled: true,
@@ -34,6 +38,35 @@ describe('buildAgentEntry', () => {
     });
   });
 
+  test('rewrites stale explicit model.primary when available providers moved it', () => {
+    const result = buildAgentEntry({
+      id: 'main',
+      name: 'main',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      model: 'openai/gpt-5.3-codex',
+      workingDirectory: '',
+      icon: '',
+      skillIds: [],
+      enabled: true,
+      isDefault: true,
+      source: 'custom',
+      presetId: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }, 'deepseek/deepseek-v4-flash', {
+      availableProviders: {
+        'openai-codex': { models: [{ id: 'gpt-5.3-codex' }] },
+      },
+    });
+
+    expect(result).toMatchObject({
+      id: 'main',
+      model: { primary: 'openai-codex/gpt-5.3-codex' },
+    });
+  });
+
   test('falls back to the default model when agent model is an ambiguous bare id', () => {
     const result = buildAgentEntry({
       id: 'main',
@@ -42,6 +75,7 @@ describe('buildAgentEntry', () => {
       systemPrompt: '',
       identity: '',
       model: 'deepseek-v3.2',
+      workingDirectory: '',
       icon: '',
       skillIds: [],
       enabled: true,
@@ -57,6 +91,55 @@ describe('buildAgentEntry', () => {
       model: { primary: 'anthropic/claude-sonnet-4' },
     });
   });
+
+  test('emits per-agent cwd when a working directory is configured', () => {
+    const result = buildAgentEntry({
+      id: 'docs',
+      name: 'Docs',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      model: '',
+      workingDirectory: '/tmp/docs-project',
+      icon: '',
+      skillIds: [],
+      enabled: true,
+      isDefault: false,
+      source: 'custom',
+      presetId: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }, 'anthropic/claude-sonnet-4');
+
+    expect(result).toMatchObject({
+      id: 'docs',
+      cwd: path.resolve('/tmp/docs-project'),
+    });
+  });
+
+  test('does not forward designed avatar metadata as an OpenClaw emoji', () => {
+    const result = buildAgentEntry({
+      id: 'designer',
+      name: 'Designer',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      model: '',
+      workingDirectory: '',
+      icon: DefaultAgentAvatarIcon,
+      skillIds: [],
+      enabled: true,
+      isDefault: false,
+      source: 'custom',
+      presetId: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }, 'anthropic/claude-sonnet-4');
+
+    const identity = result.identity as Record<string, unknown>;
+    expect(identity.name).toBe('Designer');
+    expect(identity.emoji).toBeUndefined();
+  });
 });
 
 describe('buildManagedAgentEntries', () => {
@@ -70,6 +153,7 @@ describe('buildManagedAgentEntries', () => {
           systemPrompt: '',
           identity: '',
           model: 'openai/gpt-4o',
+          workingDirectory: '',
           icon: '✍️',
           skillIds: ['docx'],
           enabled: true,
@@ -100,6 +184,7 @@ describe('buildManagedAgentEntries', () => {
           systemPrompt: '',
           identity: '',
           model: '',
+          workingDirectory: '',
           icon: '✍️',
           skillIds: [],
           enabled: true,
@@ -116,6 +201,37 @@ describe('buildManagedAgentEntries', () => {
     expect(result[0]).toMatchObject({
       id: 'writer',
       model: { primary: 'anthropic/claude-sonnet-4' },
+    });
+  });
+
+  test('sets explicit workspace for non-main agents when stateDir is provided', () => {
+    const result = buildManagedAgentEntries({
+      agents: [
+        {
+          id: 'crab-boss',
+          name: 'CrabBoss',
+          description: '',
+          systemPrompt: '',
+          identity: '',
+          model: 'openai/gpt-4o',
+          workingDirectory: '',
+          icon: '🦀',
+          skillIds: [],
+          enabled: true,
+          isDefault: false,
+          source: 'custom',
+          presetId: '',
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      fallbackPrimaryModel: 'anthropic/claude-sonnet-4',
+      stateDir: '/mock/state',
+    });
+
+    expect(result[0]).toMatchObject({
+      id: 'crab-boss',
+      workspace: expect.stringContaining('workspace-crab-boss'),
     });
   });
 });
@@ -215,6 +331,18 @@ describe('resolveQualifiedAgentModelRef', () => {
       status: 'ambiguous',
       modelId: 'deepseek-v3.2',
       providerIds: ['anthropic', 'lobsterai-server'],
+    });
+  });
+
+  test('rewrites legacy qualified refs when the model moved to one provider', () => {
+    expect(resolveQualifiedAgentModelRef({
+      agentModel: 'openai/gpt-5.3-codex',
+      availableProviders: {
+        'openai-codex': { models: [{ id: 'gpt-5.3-codex' }] },
+      },
+    })).toEqual({
+      status: 'qualified',
+      primaryModel: 'openai-codex/gpt-5.3-codex',
     });
   });
 });

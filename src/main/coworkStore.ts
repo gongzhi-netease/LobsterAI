@@ -6,12 +6,9 @@ import os from 'os';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
-import {
-  type CoworkMemoryGuardLevel,
-  extractTurnMemoryChanges,
-  isQuestionLikeMemoryText,
-} from './libs/coworkMemoryExtractor';
-import { judgeMemoryCandidate } from './libs/coworkMemoryJudge';
+import { AgentId, normalizeAgentAvatarIcon } from '../shared/agent';
+import { COWORK_MESSAGE_PAGE_SIZE, COWORK_SESSION_PAGE_SIZE } from '../shared/cowork/constants';
+
 
 // Default working directory for new users
 const getDefaultWorkingDirectory = (): string => {
@@ -33,13 +30,48 @@ const normalizeRecentWorkspacePath = (cwd: string): string => {
 const DEFAULT_MEMORY_ENABLED = true;
 const DEFAULT_MEMORY_IMPLICIT_UPDATE_ENABLED = true;
 const DEFAULT_MEMORY_LLM_JUDGE_ENABLED = false;
+export type CoworkMemoryGuardLevel = 'strict' | 'standard' | 'relaxed';
 const DEFAULT_MEMORY_GUARD_LEVEL: CoworkMemoryGuardLevel = 'strict';
 const DEFAULT_MEMORY_USER_MEMORIES_MAX_ITEMS = 12;
 const MIN_MEMORY_USER_MEMORIES_MAX_ITEMS = 1;
 const MAX_MEMORY_USER_MEMORIES_MAX_ITEMS = 60;
 const MEMORY_NEAR_DUPLICATE_MIN_SCORE = 0.82;
-const MEMORY_PROCEDURAL_TEXT_RE = /(执行以下命令|run\s+(?:the\s+)?following\s+command|\b(?:cd|npm|pnpm|yarn|node|python|bash|sh|git|curl|wget)\b|\$[A-Z_][A-Z0-9_]*|&&|--[a-z0-9-]+|\/tmp\/|\.sh\b|\.bat\b|\.ps1\b)/i;
+const MEMORY_PROCEDURAL_TEXT_RE =
+  /(执行以下命令|run\s+(?:the\s+)?following\s+command|\b(?:cd|npm|pnpm|yarn|node|python|bash|sh|git|curl|wget)\b|\$[A-Z_][A-Z0-9_]*|&&|--[a-z0-9-]+|\/tmp\/|\.sh\b|\.bat\b|\.ps1\b)/i;
 const MEMORY_ASSISTANT_STYLE_TEXT_RE = /^(?:使用|use)\s+[A-Za-z0-9._-]+\s*(?:技能|skill)/i;
+
+const DEFAULT_EMBEDDING_ENABLED = false;
+const DEFAULT_EMBEDDING_PROVIDER = 'openai';
+const DEFAULT_EMBEDDING_MODEL = '';
+const DEFAULT_EMBEDDING_LOCAL_MODEL_PATH = '';
+const DEFAULT_EMBEDDING_VECTOR_WEIGHT = 0.7;
+const DEFAULT_EMBEDDING_REMOTE_BASE_URL = '';
+const DEFAULT_EMBEDDING_REMOTE_API_KEY = '';
+
+const DEFAULT_DREAMING_ENABLED = false;
+const DEFAULT_DREAMING_FREQUENCY = '0 3 * * *';
+const DEFAULT_DREAMING_MODEL = '';
+const DEFAULT_DREAMING_TIMEZONE = '';
+
+// Regexes and helper inlined from the removed coworkMemoryExtractor module.
+// Used only by shouldAutoDeleteMemoryText() during startup memory cleanup.
+const CHINESE_QUESTION_PREFIX_RE = /^(?:请问|问下|问一下|是否|能否|可否|为什么|为何|怎么|如何|谁|什么|哪(?:里|儿|个)?|几|多少|要不要|会不会|是不是|能不能|可不可以|行不行|对不对|好不好)/u;
+const ENGLISH_QUESTION_PREFIX_RE = /^(?:what|who|why|how|when|where|which|is|are|am|do|does|did|can|could|would|will|should)\b/i;
+const QUESTION_INLINE_RE = /(是不是|能不能|可不可以|要不要|会不会|有没有|对不对|好不好)/i;
+const QUESTION_SUFFIX_RE = /(吗|么|呢|嘛)\s*$/u;
+
+function isQuestionLikeMemoryText(text: string): boolean {
+  // This function has its own normalization (strips trailing punctuation)
+  // that differs from normalizeMemoryText, so it cannot reuse that helper.
+  const normalized = text.replace(/\s+/g, ' ').trim().replace(/[。！!]+$/g, '').trim();
+  if (!normalized) return false;
+  if (/[？?]\s*$/.test(normalized)) return true;
+  if (CHINESE_QUESTION_PREFIX_RE.test(normalized)) return true;
+  if (ENGLISH_QUESTION_PREFIX_RE.test(normalized)) return true;
+  if (QUESTION_INLINE_RE.test(normalized)) return true;
+  if (QUESTION_SUFFIX_RE.test(normalized)) return true;
+  return false;
+}
 
 function normalizeMemoryGuardLevel(value: string | undefined): CoworkMemoryGuardLevel {
   if (value === 'strict' || value === 'standard' || value === 'relaxed') return value;
@@ -49,8 +81,10 @@ function normalizeMemoryGuardLevel(value: string | undefined): CoworkMemoryGuard
 function parseBooleanConfig(value: string | undefined, fallback: boolean): boolean {
   if (!value) return fallback;
   const normalized = value.trim().toLowerCase();
-  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
-  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on')
+    return true;
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off')
+    return false;
   return fallback;
 }
 
@@ -58,8 +92,15 @@ function clampMemoryUserMemoriesMaxItems(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_MEMORY_USER_MEMORIES_MAX_ITEMS;
   return Math.max(
     MIN_MEMORY_USER_MEMORIES_MAX_ITEMS,
-    Math.min(MAX_MEMORY_USER_MEMORIES_MAX_ITEMS, Math.floor(value))
+    Math.min(MAX_MEMORY_USER_MEMORIES_MAX_ITEMS, Math.floor(value)),
   );
+}
+
+function parseEmbeddingVectorWeight(value: string | undefined): number {
+  if (!value) return DEFAULT_EMBEDDING_VECTOR_WEIGHT;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_EMBEDDING_VECTOR_WEIGHT;
+  return Math.max(0, Math.min(1, parsed));
 }
 
 function normalizeMemoryText(value: string): string {
@@ -85,7 +126,7 @@ function extractConversationSearchTerms(value: string): string[] {
   addTerm(normalized);
   const tokens = normalized
     .split(/[\s,，、|/\\;；]+/g)
-    .map((token) => token.replace(/^['"`]+|['"`]+$/g, '').trim())
+    .map(token => token.replace(/^['"`]+|['"`]+$/g, '').trim())
     .filter(Boolean);
 
   for (const token of tokens) {
@@ -118,7 +159,7 @@ function normalizeMemorySemanticKey(value: string): string {
 function buildTokenFrequencyMap(value: string): Map<string, number> {
   const tokens = value
     .split(/\s+/g)
-    .map((token) => token.trim())
+    .map(token => token.trim())
     .filter(Boolean);
   const map = new Map<string, number>();
   for (const token of tokens) {
@@ -189,14 +230,20 @@ function scoreMemorySimilarity(left: string, right: string): number {
   }
 
   let phraseScore = 0;
-  if (compactLeft && compactRight && (compactLeft.includes(compactRight) || compactRight.includes(compactLeft))) {
-    phraseScore = Math.min(compactLeft.length, compactRight.length) / Math.max(compactLeft.length, compactRight.length);
+  if (
+    compactLeft &&
+    compactRight &&
+    (compactLeft.includes(compactRight) || compactRight.includes(compactLeft))
+  ) {
+    phraseScore =
+      Math.min(compactLeft.length, compactRight.length) /
+      Math.max(compactLeft.length, compactRight.length);
   }
 
   return Math.max(
     phraseScore,
     scoreTokenOverlap(left, right),
-    scoreCharacterBigramDice(left, right)
+    scoreCharacterBigramDice(left, right),
   );
 }
 
@@ -229,43 +276,9 @@ function choosePreferredMemoryText(currentText: string, incomingText: string): s
   const incomingScore = scoreMemoryTextQuality(normalizedIncoming);
   if (incomingScore > currentScore + 1) return normalizedIncoming;
   if (currentScore > incomingScore + 1) return normalizedCurrent;
-  return normalizedIncoming.length >= normalizedCurrent.length ? normalizedIncoming : normalizedCurrent;
-}
-
-function isMeaningfulDeleteFragment(value: string): boolean {
-  if (!value) return false;
-  const tokens = value.split(/\s+/g).filter(Boolean);
-  if (tokens.length >= 2) return true;
-  if (/[\u3400-\u9fff]/u.test(value)) return value.length >= 4;
-  return value.length >= 6;
-}
-
-function includesAsBoundedPhrase(target: string, fragment: string): boolean {
-  if (!target || !fragment) return false;
-  const paddedTarget = ` ${target} `;
-  const paddedFragment = ` ${fragment} `;
-  if (paddedTarget.includes(paddedFragment)) {
-    return true;
-  }
-  // CJK phrases are often unsegmented, so token boundaries are unreliable.
-  if (/[\u3400-\u9fff]/u.test(fragment) && !fragment.includes(' ')) {
-    return target.includes(fragment);
-  }
-  return false;
-}
-
-function scoreDeleteMatch(targetKey: string, queryKey: string): number {
-  if (!targetKey || !queryKey) return 0;
-  if (targetKey === queryKey) {
-    return 1000 + queryKey.length;
-  }
-  if (!isMeaningfulDeleteFragment(queryKey)) {
-    return 0;
-  }
-  if (!includesAsBoundedPhrase(targetKey, queryKey)) {
-    return 0;
-  }
-  return 100 + Math.min(targetKey.length, queryKey.length);
+  return normalizedIncoming.length >= normalizedCurrent.length
+    ? normalizedIncoming
+    : normalizedCurrent;
 }
 
 function buildMemoryFingerprint(text: string): string {
@@ -285,19 +298,25 @@ function parseTimeToMs(input?: string | null): number | null {
   return timestamp;
 }
 
+function normalizeMessageTimestamp(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
 function shouldAutoDeleteMemoryText(text: string): boolean {
   const normalized = normalizeMemoryText(text);
   if (!normalized) return false;
-  return MEMORY_ASSISTANT_STYLE_TEXT_RE.test(normalized)
-    || MEMORY_PROCEDURAL_TEXT_RE.test(normalized)
-    || isQuestionLikeMemoryText(normalized);
+  return (
+    MEMORY_ASSISTANT_STYLE_TEXT_RE.test(normalized) ||
+    MEMORY_PROCEDURAL_TEXT_RE.test(normalized) ||
+    isQuestionLikeMemoryText(normalized)
+  );
 }
 
 // Types mirroring src/types/cowork.ts for main process use
 export type CoworkSessionStatus = 'idle' | 'running' | 'completed' | 'error';
 export type CoworkMessageType = 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'system';
 export type CoworkExecutionMode = 'auto' | 'local' | 'sandbox';
-export type CoworkAgentEngine = 'openclaw' | 'yd_cowork';
+export type CoworkAgentEngine = 'openclaw';
 
 export type AgentSource = 'custom' | 'preset';
 
@@ -308,9 +327,12 @@ export interface Agent {
   systemPrompt: string;
   identity: string;
   model: string;
+  workingDirectory: string;
   icon: string;
   skillIds: string[];
   enabled: boolean;
+  pinned: boolean;
+  pinOrder?: number | null;
   isDefault: boolean;
   source: AgentSource;
   presetId: string;
@@ -325,6 +347,7 @@ export interface CreateAgentRequest {
   systemPrompt?: string;
   identity?: string;
   model?: string;
+  workingDirectory?: string;
   icon?: string;
   skillIds?: string[];
   source?: AgentSource;
@@ -337,19 +360,13 @@ export interface UpdateAgentRequest {
   systemPrompt?: string;
   identity?: string;
   model?: string;
+  workingDirectory?: string;
   icon?: string;
   skillIds?: string[];
   enabled?: boolean;
+  pinned?: boolean;
 }
 
-const COWORK_AGENT_ENGINE = 'openclaw';
-
-function normalizeCoworkAgentEngineValue(value?: string | null): CoworkAgentEngine {
-  if (value === COWORK_AGENT_ENGINE || value === 'openclaw') {
-    return value;
-  }
-  return COWORK_AGENT_ENGINE;
-}
 
 export interface CoworkMessageMetadata {
   toolName?: string;
@@ -361,6 +378,15 @@ export interface CoworkMessageMetadata {
   isStreaming?: boolean;
   isFinal?: boolean;
   skillIds?: string[];
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  contextPercent?: number;
+  model?: string;
+  agentName?: string;
   [key: string]: unknown;
 }
 
@@ -372,18 +398,31 @@ export interface CoworkMessage {
   metadata?: CoworkMessageMetadata;
 }
 
+export interface CoworkConversationReplacementEntry {
+  role: 'user' | 'assistant';
+  text: string;
+  metadata?: Record<string, unknown>;
+  timestamp?: number;
+}
+
 export interface CoworkSession {
   id: string;
   title: string;
   claudeSessionId: string | null;
   status: CoworkSessionStatus;
   pinned: boolean;
+  pinOrder?: number | null;
   cwd: string;
   systemPrompt: string;
+  modelOverride: string;
   executionMode: CoworkExecutionMode;
   activeSkillIds: string[];
   agentId: string;
   messages: CoworkMessage[];
+  /** Offset of the first loaded message in the full message history. */
+  messagesOffset: number;
+  /** Total number of messages stored for this session. */
+  totalMessages: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -393,6 +432,7 @@ export interface CoworkSessionSummary {
   title: string;
   status: CoworkSessionStatus;
   pinned: boolean;
+  pinOrder?: number | null;
   agentId: string;
   createdAt: number;
   updatedAt: number;
@@ -456,6 +496,17 @@ export interface CoworkConfig {
   memoryGuardLevel: CoworkMemoryGuardLevel;
   memoryUserMemoriesMaxItems: number;
   skipMissedJobs: boolean;
+  embeddingEnabled: boolean;
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingLocalModelPath: string;
+  embeddingVectorWeight: number;
+  embeddingRemoteBaseUrl: string;
+  embeddingRemoteApiKey: string;
+  dreamingEnabled: boolean;
+  dreamingFrequency: string;
+  dreamingModel: string;
+  dreamingTimezone: string;
 }
 
 export type CoworkConfigUpdate = Partial<Pick<
@@ -469,28 +520,32 @@ CoworkConfig,
   | 'memoryGuardLevel'
   | 'memoryUserMemoriesMaxItems'
   | 'skipMissedJobs'
+  | 'embeddingEnabled'
+  | 'embeddingProvider'
+  | 'embeddingModel'
+  | 'embeddingLocalModelPath'
+  | 'embeddingVectorWeight'
+  | 'embeddingRemoteBaseUrl'
+  | 'embeddingRemoteApiKey'
+  | 'dreamingEnabled'
+  | 'dreamingFrequency'
+  | 'dreamingModel'
+  | 'dreamingTimezone'
 >>;
 
-export interface ApplyTurnMemoryUpdatesOptions {
-  sessionId: string;
-  userText: string;
-  assistantText: string;
-  implicitEnabled: boolean;
-  memoryLlmJudgeEnabled: boolean;
-  guardLevel: CoworkMemoryGuardLevel;
-  userMessageId?: string;
-  assistantMessageId?: string;
+export type PluginSource = 'npm' | 'clawhub' | 'git' | 'local' | 'openclaw';
+
+export interface UserInstalledPlugin {
+  pluginId: string;
+  source: PluginSource;
+  spec: string;
+  registry?: string;
+  version?: string;
+  enabled: boolean;
+  installedAt: number;
+  config?: Record<string, unknown>;
 }
 
-export interface ApplyTurnMemoryUpdatesResult {
-  totalChanges: number;
-  created: number;
-  updated: number;
-  deleted: number;
-  judgeRejected: number;
-  llmReviewed: number;
-  skipped: number;
-}
 
 let cachedDefaultSystemPrompt: string | null = null;
 
@@ -543,13 +598,26 @@ export class CoworkStore {
     return this.db.prepare(sql).all(...params) as T[];
   }
 
+  private upsertConfig(key: string, value: string, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO cowork_config (key, value, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = excluded.updated_at`,
+      )
+      .run(key, value, now);
+  }
+
   createSession(
     title: string,
     cwd: string,
     systemPrompt: string = '',
     executionMode: CoworkExecutionMode = 'local',
     activeSkillIds: string[] = [],
-    agentId: string = 'main'
+    agentId: string = 'main',
+    modelOverride: string = ''
   ): CoworkSession {
     const id = uuidv4();
     const now = Date.now();
@@ -557,8 +625,8 @@ export class CoworkStore {
     this.db
       .prepare(
         `
-      INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
-      VALUES (?, ?, NULL, 'idle', ?, ?, ?, ?, ?, 0, ?, ?)
+      INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
+      VALUES (?, ?, NULL, 'idle', ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `,
       )
       .run(
@@ -566,6 +634,7 @@ export class CoworkStore {
         title,
         cwd,
         systemPrompt,
+        modelOverride,
         executionMode,
         JSON.stringify(activeSkillIds),
         agentId,
@@ -579,26 +648,32 @@ export class CoworkStore {
       claudeSessionId: null,
       status: 'idle',
       pinned: false,
+      pinOrder: null,
       cwd,
       systemPrompt,
+      modelOverride,
       executionMode,
       activeSkillIds,
       agentId,
       messages: [],
+      messagesOffset: 0,
+      totalMessages: 0,
       createdAt: now,
       updatedAt: now,
     };
   }
 
-  getSession(id: string): CoworkSession | null {
+  getSession(id: string, messageLimit = COWORK_MESSAGE_PAGE_SIZE): CoworkSession | null {
     interface SessionRow {
       id: string;
       title: string;
       claude_session_id: string | null;
       status: string;
       pinned?: number | null;
+      pin_order?: number | null;
       cwd: string;
       system_prompt: string;
+      model_override?: string | null;
       execution_mode?: string | null;
       active_skill_ids?: string | null;
       agent_id?: string | null;
@@ -608,7 +683,7 @@ export class CoworkStore {
 
     const row = this.getOne<SessionRow>(
       `
-      SELECT id, title, claude_session_id, status, pinned, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, created_at, updated_at
+      SELECT id, title, claude_session_id, status, pinned, pin_order, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, created_at, updated_at
       FROM cowork_sessions
       WHERE id = ?
     `,
@@ -617,7 +692,12 @@ export class CoworkStore {
 
     if (!row) return null;
 
-    const messages = this.getSessionMessages(id);
+    const totalMessages = this.countSessionMessages(id);
+    const messageOffset = Math.max(0, totalMessages - messageLimit);
+    const messages =
+      messageOffset > 0
+        ? this.getPagedSessionMessages(id, messageLimit, messageOffset)
+        : this.getSessionMessages(id);
 
     let activeSkillIds: string[] = [];
     if (row.active_skill_ids) {
@@ -635,12 +715,16 @@ export class CoworkStore {
       claudeSessionId: row.claude_session_id,
       status: row.status as CoworkSessionStatus,
       pinned: Boolean(row.pinned),
+      pinOrder: row.pin_order ?? null,
       cwd: row.cwd,
       systemPrompt: row.system_prompt,
+      modelOverride: row.model_override || '',
       executionMode: (row.execution_mode as CoworkExecutionMode) || 'local',
       activeSkillIds,
       agentId: row.agent_id || 'main',
       messages,
+      messagesOffset: messageOffset,
+      totalMessages,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -651,13 +735,18 @@ export class CoworkStore {
     updates: Partial<
       Pick<
         CoworkSession,
-        'title' | 'claudeSessionId' | 'status' | 'cwd' | 'systemPrompt' | 'executionMode'
+        'title' | 'claudeSessionId' | 'status' | 'cwd' | 'systemPrompt' | 'modelOverride' | 'executionMode'
       >
     >,
+    options: { touchUpdatedAt?: boolean } = {},
   ): void {
-    const now = Date.now();
-    const setClauses: string[] = ['updated_at = ?'];
-    const values: (string | number | null)[] = [now];
+    const setClauses: string[] = [];
+    const values: (string | number | null)[] = [];
+
+    if (options.touchUpdatedAt ?? true) {
+      setClauses.push('updated_at = ?');
+      values.push(Date.now());
+    }
 
     if (updates.title !== undefined) {
       setClauses.push('title = ?');
@@ -679,10 +768,16 @@ export class CoworkStore {
       setClauses.push('system_prompt = ?');
       values.push(updates.systemPrompt);
     }
+    if (updates.modelOverride !== undefined) {
+      setClauses.push('model_override = ?');
+      values.push(updates.modelOverride);
+    }
     if (updates.executionMode !== undefined) {
       setClauses.push('execution_mode = ?');
       values.push(updates.executionMode);
     }
+
+    if (setClauses.length === 0) return;
 
     values.push(id);
     this.db
@@ -696,32 +791,103 @@ export class CoworkStore {
       .run(...values);
   }
 
+  listSessionIdsByAgent(agentId: string): string[] {
+    const rows = this.getAll<{ id: string }>(
+      'SELECT id FROM cowork_sessions WHERE agent_id = ?',
+      [agentId],
+    );
+    return rows.map(row => row.id);
+  }
+
+  private deleteSessionRows(ids: string[]): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    this.db.prepare(`DELETE FROM cowork_messages WHERE session_id IN (${placeholders})`).run(...ids);
+    this.db.prepare(`DELETE FROM cowork_sessions WHERE id IN (${placeholders})`).run(...ids);
+  }
+
+  private deleteSessionsForAgent(agentId: string): string[] {
+    const sessionIds = this.listSessionIdsByAgent(agentId);
+    for (const sessionId of sessionIds) {
+      this.markMemorySourcesInactiveBySession(sessionId);
+    }
+    this.deleteSessionRows(sessionIds);
+    return sessionIds;
+  }
+
   deleteSession(id: string): void {
-    this.markMemorySourcesInactiveBySession(id);
-    this.db.prepare('DELETE FROM cowork_sessions WHERE id = ?').run(id);
+    const deleteSession = this.db.transaction((sessionId: string) => {
+      this.markMemorySourcesInactiveBySession(sessionId);
+      this.deleteSessionRows([sessionId]);
+    });
+    deleteSession(id);
     this.markOrphanImplicitMemoriesStale();
   }
 
   deleteSessions(ids: string[]): void {
-    if (ids.length === 0) return;
-    for (const id of ids) {
-      this.markMemorySourcesInactiveBySession(id);
-    }
-    const placeholders = ids.map(() => '?').join(',');
-    this.db.prepare(`DELETE FROM cowork_sessions WHERE id IN (${placeholders})`).run(...ids);
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    if (uniqueIds.length === 0) return;
+
+    const deleteSessions = this.db.transaction((sessionIds: string[]) => {
+      for (const id of sessionIds) {
+        this.markMemorySourcesInactiveBySession(id);
+      }
+      this.deleteSessionRows(sessionIds);
+    });
+    deleteSessions(uniqueIds);
     this.markOrphanImplicitMemoriesStale();
   }
 
-  setSessionPinned(id: string, pinned: boolean): void {
-    this.db.prepare('UPDATE cowork_sessions SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id);
+  setSessionPinned(id: string, pinned: boolean): number | null {
+    if (!pinned) {
+      this.db.prepare('UPDATE cowork_sessions SET pinned = 0, pin_order = NULL WHERE id = ?').run(id);
+      return null;
+    }
+
+    const session = this.db
+      .prepare('SELECT agent_id FROM cowork_sessions WHERE id = ?')
+      .get(id) as { agent_id?: string | null } | undefined;
+    if (!session) {
+      return null;
+    }
+
+    const agentId = session.agent_id || 'main';
+    const maxRow = this.db
+      .prepare(
+        `
+        SELECT MAX(pin_order) as max_pin_order
+        FROM cowork_sessions
+        WHERE pinned = 1 AND COALESCE(agent_id, 'main') = ?
+      `,
+      )
+      .get(agentId) as { max_pin_order?: number | null } | undefined;
+    const pinOrder = (maxRow?.max_pin_order ?? 0) + 1;
+    this.db
+      .prepare('UPDATE cowork_sessions SET pinned = 1, pin_order = ? WHERE id = ?')
+      .run(pinOrder, id);
+    return pinOrder;
   }
 
-  listSessions(agentId?: string): CoworkSessionSummary[] {
+  countSessions(agentId?: string): number {
+    if (agentId) {
+      const row = this.db
+        .prepare('SELECT COUNT(*) as count FROM cowork_sessions WHERE agent_id = ?')
+        .get(agentId) as { count: number } | undefined;
+      return row?.count || 0;
+    }
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM cowork_sessions').get() as
+      | { count: number }
+      | undefined;
+    return row?.count || 0;
+  }
+
+  listSessions(limit = COWORK_SESSION_PAGE_SIZE, offset = 0, agentId?: string): CoworkSessionSummary[] {
     interface SessionSummaryRow {
       id: string;
       title: string;
       status: string;
       pinned: number | null;
+      pin_order: number | null;
       agent_id: string | null;
       created_at: number;
       updated_at: number;
@@ -731,19 +897,30 @@ export class CoworkStore {
     if (agentId) {
       rows = this.getAll<SessionSummaryRow>(
         `
-        SELECT id, title, status, pinned, agent_id, created_at, updated_at
+        SELECT id, title, status, pinned, pin_order, agent_id, created_at, updated_at
         FROM cowork_sessions
         WHERE agent_id = ?
-        ORDER BY pinned DESC, updated_at DESC
+        ORDER BY pinned DESC,
+          CASE WHEN pinned = 1 THEN COALESCE(pin_order, updated_at, created_at) END ASC,
+          CASE WHEN pinned = 0 THEN updated_at END DESC,
+          updated_at DESC
+        LIMIT ? OFFSET ?
       `,
-        [agentId],
+        [agentId, limit, offset],
       );
     } else {
-      rows = this.getAll<SessionSummaryRow>(`
-        SELECT id, title, status, pinned, agent_id, created_at, updated_at
+      rows = this.getAll<SessionSummaryRow>(
+        `
+        SELECT id, title, status, pinned, pin_order, agent_id, created_at, updated_at
         FROM cowork_sessions
-        ORDER BY pinned DESC, updated_at DESC
-      `);
+        ORDER BY pinned DESC,
+          CASE WHEN pinned = 1 THEN COALESCE(pin_order, updated_at, created_at) END ASC,
+          CASE WHEN pinned = 0 THEN updated_at END DESC,
+          updated_at DESC
+        LIMIT ? OFFSET ?
+      `,
+        [limit, offset],
+      );
     }
 
     return rows.map(row => ({
@@ -751,6 +928,7 @@ export class CoworkStore {
       title: row.title,
       status: row.status as CoworkSessionStatus,
       pinned: Boolean(row.pinned),
+      pinOrder: row.pin_order ?? null,
       agentId: row.agent_id || 'main',
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -805,6 +983,38 @@ export class CoworkStore {
     return deduped;
   }
 
+  countSessionMessages(sessionId: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) as count FROM cowork_messages WHERE session_id = ?')
+      .get(sessionId) as { count: number } | undefined;
+    return row?.count || 0;
+  }
+
+  getPagedSessionMessages(sessionId: string, limit: number, offset: number): CoworkMessage[] {
+    const rows = this.getAll<CoworkMessageRow>(
+      `
+      SELECT id, type, content, metadata, created_at, sequence
+      FROM (
+        SELECT id, type, content, metadata, created_at, sequence, ROWID as rowid_
+        FROM cowork_messages
+        WHERE session_id = ?
+        ORDER BY COALESCE(sequence, created_at) ASC, created_at ASC, ROWID ASC
+        LIMIT ? OFFSET ?
+      )
+      ORDER BY COALESCE(sequence, created_at) ASC, created_at ASC, rowid_ ASC
+    `,
+      [sessionId, limit, offset],
+    );
+
+    return rows.map(row => ({
+      id: row.id,
+      type: row.type as CoworkMessageType,
+      content: row.content,
+      timestamp: row.created_at,
+      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+    }));
+  }
+
   private getSessionMessages(sessionId: string): CoworkMessage[] {
     const rows = this.getAll<CoworkMessageRow>(
       `
@@ -841,9 +1051,9 @@ export class CoworkStore {
     });
   }
 
-  addMessage(sessionId: string, message: Omit<CoworkMessage, 'id' | 'timestamp'>): CoworkMessage {
+  addMessage(sessionId: string, message: Omit<CoworkMessage, 'id' | 'timestamp'>, timestamp?: number): CoworkMessage {
     const id = uuidv4();
-    const now = Date.now();
+    const now = timestamp ?? Date.now();
 
     const seqRow = this.db
       .prepare(
@@ -960,14 +1170,36 @@ export class CoworkStore {
    */
   replaceConversationMessages(
     sessionId: string,
-    authoritative: Array<{ role: 'user' | 'assistant'; text: string }>,
+    authoritative: CoworkConversationReplacementEntry[],
   ): void {
     const now = Date.now();
 
     this.db.transaction(() => {
+      const existingRows = this.db
+        .prepare(
+          `
+          SELECT type, content, created_at
+          FROM cowork_messages
+          WHERE session_id = ? AND type IN ('user', 'assistant')
+          ORDER BY COALESCE(sequence, created_at) ASC, created_at ASC, ROWID ASC
+        `,
+        )
+        .all(sessionId) as Array<{ type: 'user' | 'assistant'; content: string; created_at: number }>;
+      const existingTimestamps = new Map<string, number[]>();
+      for (const row of existingRows) {
+        const timestamp = normalizeMessageTimestamp(Number(row.created_at));
+        if (timestamp == null) continue;
+        const key = `${row.type}\x1f${row.content}`;
+        const timestamps = existingTimestamps.get(key) ?? [];
+        timestamps.push(timestamp);
+        existingTimestamps.set(key, timestamps);
+      }
+
       // Delete all existing user/assistant messages for this session
       this.db
-        .prepare("DELETE FROM cowork_messages WHERE session_id = ? AND type IN ('user', 'assistant')")
+        .prepare(
+          "DELETE FROM cowork_messages WHERE session_id = ? AND type IN ('user', 'assistant')",
+        )
         .run(sessionId);
 
       // Re-insert authoritative messages with correct sequence numbers
@@ -978,9 +1210,21 @@ export class CoworkStore {
         )
         .get(sessionId) as { max_seq: number } | undefined;
       let nextSeq = (seqRow?.max_seq ?? 0) + 1;
+      const insertedTimestamps: number[] = [];
 
       for (const entry of authoritative) {
         const id = uuidv4();
+        const baseMetadata = { isStreaming: false, isFinal: true };
+        const finalMetadata = entry.metadata
+          ? { ...baseMetadata, ...entry.metadata }
+          : baseMetadata;
+        const existingKey = `${entry.role}\x1f${entry.text}`;
+        const matchingExistingTimestamps = existingTimestamps.get(existingKey);
+        const existingTimestamp = matchingExistingTimestamps?.shift();
+        const messageTimestamp = normalizeMessageTimestamp(entry.timestamp)
+          ?? existingTimestamp
+          ?? now;
+        insertedTimestamps.push(messageTimestamp);
         this.db
           .prepare(
             `
@@ -993,13 +1237,16 @@ export class CoworkStore {
             sessionId,
             entry.role,
             entry.text,
-            JSON.stringify({ isStreaming: false, isFinal: true }),
-            now,
+            JSON.stringify(finalMetadata),
+            messageTimestamp,
             nextSeq++,
           );
       }
 
-      this.db.prepare('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?').run(now, sessionId);
+      const updatedAt = insertedTimestamps.length > 0
+        ? insertedTimestamps[insertedTimestamps.length - 1]
+        : now;
+      this.db.prepare('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?').run(updatedAt, sessionId);
     })();
   }
 
@@ -1008,8 +1255,9 @@ export class CoworkStore {
     messageId: string,
     updates: { content?: string; metadata?: CoworkMessageMetadata },
   ): void {
+    const now = Date.now();
     const setClauses: string[] = [];
-    const values: (string | null)[] = [];
+    const values: (string | number | null)[] = [];
 
     if (updates.content !== undefined) {
       setClauses.push('content = ?');
@@ -1024,7 +1272,7 @@ export class CoworkStore {
 
     values.push(messageId);
     values.push(sessionId);
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE cowork_messages
@@ -1033,6 +1281,9 @@ export class CoworkStore {
     `,
       )
       .run(...values);
+    if (result.changes > 0) {
+      this.db.prepare('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?').run(now, sessionId);
+    }
   }
 
   // Config operations
@@ -1047,6 +1298,17 @@ export class CoworkStore {
       'memoryGuardLevel',
       'memoryUserMemoriesMaxItems',
       'skipMissedJobs',
+      'embeddingEnabled',
+      'embeddingProvider',
+      'embeddingModel',
+      'embeddingLocalModelPath',
+      'embeddingVectorWeight',
+      'embeddingRemoteBaseUrl',
+      'embeddingRemoteApiKey',
+      'dreamingEnabled',
+      'dreamingFrequency',
+      'dreamingModel',
+      'dreamingTimezone',
     ] as const;
     const configRows = this.getAll<{ key: string; value: string }>(
       `SELECT key, value FROM cowork_config WHERE key IN (${configKeys.map(() => '?').join(', ')})`,
@@ -1058,7 +1320,7 @@ export class CoworkStore {
       workingDirectory: cfg.get('workingDirectory') || getDefaultWorkingDirectory(),
       systemPrompt: getDefaultSystemPrompt(),
       executionMode: 'local' as CoworkExecutionMode,
-      agentEngine: normalizeCoworkAgentEngineValue(cfg.get('agentEngine')),
+      agentEngine: 'openclaw' as CoworkAgentEngine,
       memoryEnabled: parseBooleanConfig(cfg.get('memoryEnabled'), DEFAULT_MEMORY_ENABLED),
       memoryImplicitUpdateEnabled: parseBooleanConfig(
         cfg.get('memoryImplicitUpdateEnabled'),
@@ -1072,7 +1334,18 @@ export class CoworkStore {
       memoryUserMemoriesMaxItems: clampMemoryUserMemoriesMaxItems(
         Number(cfg.get('memoryUserMemoriesMaxItems')),
       ),
-      skipMissedJobs: parseBooleanConfig(cfg.get('skipMissedJobs'), false),
+      skipMissedJobs: parseBooleanConfig(cfg.get('skipMissedJobs'), true),
+      embeddingEnabled: parseBooleanConfig(cfg.get('embeddingEnabled'), DEFAULT_EMBEDDING_ENABLED),
+      embeddingProvider: cfg.get('embeddingProvider') || DEFAULT_EMBEDDING_PROVIDER,
+      embeddingModel: cfg.get('embeddingModel') || DEFAULT_EMBEDDING_MODEL,
+      embeddingLocalModelPath: cfg.get('embeddingLocalModelPath') || DEFAULT_EMBEDDING_LOCAL_MODEL_PATH,
+      embeddingVectorWeight: parseEmbeddingVectorWeight(cfg.get('embeddingVectorWeight')),
+      embeddingRemoteBaseUrl: cfg.get('embeddingRemoteBaseUrl') || DEFAULT_EMBEDDING_REMOTE_BASE_URL,
+      embeddingRemoteApiKey: cfg.get('embeddingRemoteApiKey') || DEFAULT_EMBEDDING_REMOTE_API_KEY,
+      dreamingEnabled: parseBooleanConfig(cfg.get('dreamingEnabled'), DEFAULT_DREAMING_ENABLED),
+      dreamingFrequency: cfg.get('dreamingFrequency') || DEFAULT_DREAMING_FREQUENCY,
+      dreamingModel: cfg.get('dreamingModel') || DEFAULT_DREAMING_MODEL,
+      dreamingTimezone: cfg.get('dreamingTimezone') || DEFAULT_DREAMING_TIMEZONE,
     };
   }
 
@@ -1080,130 +1353,64 @@ export class CoworkStore {
     const now = Date.now();
 
     if (config.workingDirectory !== undefined) {
-      this.db
-        .prepare(
-          `
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('workingDirectory', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `,
-        )
-        .run(config.workingDirectory, now);
+      this.upsertConfig('workingDirectory', config.workingDirectory, now);
     }
-
     if (config.executionMode !== undefined) {
-      this.db
-        .prepare(
-          `
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('executionMode', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `,
-        )
-        .run(config.executionMode, now);
+      this.upsertConfig('executionMode', config.executionMode, now);
     }
-
     if (config.agentEngine !== undefined) {
-      const normalizedAgentEngine = normalizeCoworkAgentEngineValue(config.agentEngine);
-      this.db
-        .prepare(
-          `
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('agentEngine', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `,
-        )
-        .run(normalizedAgentEngine, now);
+      this.upsertConfig('agentEngine', 'openclaw', now);
     }
-
     if (config.memoryEnabled !== undefined) {
-      this.db
-        .prepare(
-          `
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('memoryEnabled', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `,
-        )
-        .run(config.memoryEnabled ? '1' : '0', now);
+      this.upsertConfig('memoryEnabled', config.memoryEnabled ? '1' : '0', now);
     }
-
     if (config.memoryImplicitUpdateEnabled !== undefined) {
-      this.db
-        .prepare(
-          `
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('memoryImplicitUpdateEnabled', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `,
-        )
-        .run(config.memoryImplicitUpdateEnabled ? '1' : '0', now);
+      this.upsertConfig('memoryImplicitUpdateEnabled', config.memoryImplicitUpdateEnabled ? '1' : '0', now);
     }
-
     if (config.memoryLlmJudgeEnabled !== undefined) {
-      this.db
-        .prepare(
-          `
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('memoryLlmJudgeEnabled', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `,
-        )
-        .run(config.memoryLlmJudgeEnabled ? '1' : '0', now);
+      this.upsertConfig('memoryLlmJudgeEnabled', config.memoryLlmJudgeEnabled ? '1' : '0', now);
     }
-
     if (config.memoryGuardLevel !== undefined) {
-      this.db
-        .prepare(
-          `
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('memoryGuardLevel', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `,
-        )
-        .run(normalizeMemoryGuardLevel(config.memoryGuardLevel), now);
+      this.upsertConfig('memoryGuardLevel', normalizeMemoryGuardLevel(config.memoryGuardLevel), now);
     }
-
     if (config.memoryUserMemoriesMaxItems !== undefined) {
-      this.db
-        .prepare(
-          `
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('memoryUserMemoriesMaxItems', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `,
-        )
-        .run(String(clampMemoryUserMemoriesMaxItems(config.memoryUserMemoriesMaxItems)), now);
+      this.upsertConfig('memoryUserMemoriesMaxItems', String(clampMemoryUserMemoriesMaxItems(config.memoryUserMemoriesMaxItems)), now);
     }
-
     if (config.skipMissedJobs !== undefined) {
-      this.db
-        .prepare(
-          `
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('skipMissedJobs', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `,
-        )
-        .run(config.skipMissedJobs ? '1' : '0', now);
+      this.upsertConfig('skipMissedJobs', config.skipMissedJobs ? '1' : '0', now);
+    }
+    if (config.embeddingEnabled !== undefined) {
+      this.upsertConfig('embeddingEnabled', config.embeddingEnabled ? '1' : '0', now);
+    }
+    if (config.embeddingProvider !== undefined) {
+      this.upsertConfig('embeddingProvider', String(config.embeddingProvider), now);
+    }
+    if (config.embeddingModel !== undefined) {
+      this.upsertConfig('embeddingModel', String(config.embeddingModel), now);
+    }
+    if (config.embeddingLocalModelPath !== undefined) {
+      this.upsertConfig('embeddingLocalModelPath', String(config.embeddingLocalModelPath), now);
+    }
+    if (config.embeddingVectorWeight !== undefined) {
+      this.upsertConfig('embeddingVectorWeight', String(Math.max(0, Math.min(1, config.embeddingVectorWeight))), now);
+    }
+    if (config.embeddingRemoteBaseUrl !== undefined) {
+      this.upsertConfig('embeddingRemoteBaseUrl', String(config.embeddingRemoteBaseUrl), now);
+    }
+    if (config.embeddingRemoteApiKey !== undefined) {
+      this.upsertConfig('embeddingRemoteApiKey', String(config.embeddingRemoteApiKey), now);
+    }
+    if (config.dreamingEnabled !== undefined) {
+      this.upsertConfig('dreamingEnabled', config.dreamingEnabled ? '1' : '0', now);
+    }
+    if (config.dreamingFrequency !== undefined) {
+      this.upsertConfig('dreamingFrequency', String(config.dreamingFrequency), now);
+    }
+    if (config.dreamingModel !== undefined) {
+      this.upsertConfig('dreamingModel', String(config.dreamingModel), now);
+    }
+    if (config.dreamingTimezone !== undefined) {
+      this.upsertConfig('dreamingTimezone', String(config.dreamingTimezone), now);
     }
   }
 
@@ -1621,116 +1828,6 @@ export class CoworkStore {
       .run(now);
   }
 
-  async applyTurnMemoryUpdates(
-    options: ApplyTurnMemoryUpdatesOptions,
-  ): Promise<ApplyTurnMemoryUpdatesResult> {
-    const result: ApplyTurnMemoryUpdatesResult = {
-      totalChanges: 0,
-      created: 0,
-      updated: 0,
-      deleted: 0,
-      judgeRejected: 0,
-      llmReviewed: 0,
-      skipped: 0,
-    };
-
-    const extracted = extractTurnMemoryChanges({
-      userText: options.userText,
-      assistantText: options.assistantText,
-      guardLevel: options.guardLevel,
-      maxImplicitAdds: options.implicitEnabled ? 2 : 0,
-    });
-    result.totalChanges = extracted.length;
-
-    // Lazily loaded on first delete operation and reused, avoiding N×M queries.
-    let deleteCandidates: CoworkUserMemory[] | null = null;
-
-    for (const change of extracted) {
-      if (change.action === 'add') {
-        if (!options.implicitEnabled && !change.isExplicit) {
-          result.skipped += 1;
-          continue;
-        }
-        const judge = await judgeMemoryCandidate({
-          text: change.text,
-          isExplicit: change.isExplicit,
-          guardLevel: options.guardLevel,
-          llmEnabled: options.memoryLlmJudgeEnabled,
-        });
-        if (judge.source === 'llm') {
-          result.llmReviewed += 1;
-        }
-        if (!judge.accepted) {
-          result.judgeRejected += 1;
-          result.skipped += 1;
-          continue;
-        }
-
-        const write = this.createOrReviveUserMemory({
-          text: change.text,
-          confidence: change.confidence,
-          isExplicit: change.isExplicit,
-          source: {
-            role: 'user',
-            sessionId: options.sessionId,
-            messageId: options.userMessageId,
-          },
-        });
-
-        if (!change.isExplicit && options.assistantMessageId) {
-          this.addMemorySource(write.memory.id, {
-            role: 'assistant',
-            sessionId: options.sessionId,
-            messageId: options.assistantMessageId,
-          });
-        }
-
-        if (write.created) result.created += 1;
-        else if (write.updated) result.updated += 1;
-        else result.skipped += 1;
-        continue;
-      }
-
-      const key = normalizeMemoryMatchKey(change.text);
-      if (!key) {
-        result.skipped += 1;
-        continue;
-      }
-
-      // Load all candidates once for the first delete operation; reuse for subsequent ones.
-      if (!deleteCandidates) {
-        deleteCandidates = this.listUserMemories({
-          status: 'all',
-          includeDeleted: false,
-          limit: 100,
-        });
-      }
-      const candidates = deleteCandidates;
-      let target: CoworkUserMemory | null = null;
-      let bestScore = 0;
-      for (const entry of candidates) {
-        const currentKey = normalizeMemoryMatchKey(entry.text);
-        if (!currentKey) continue;
-        const score = scoreDeleteMatch(currentKey, key);
-        if (score <= bestScore) continue;
-        bestScore = score;
-        target = entry;
-      }
-
-      if (!target) {
-        result.skipped += 1;
-        continue;
-      }
-
-      const deleted = this.deleteUserMemory(target.id);
-      if (deleted) result.deleted += 1;
-      else result.skipped += 1;
-    }
-
-    this.markOrphanImplicitMemoriesStale();
-    return result;
-  }
-
   private getLatestMessageByType(sessionId: string, type: 'user' | 'assistant'): string {
     const row = this.getOne<{ content: string }>(
       `
@@ -1894,9 +1991,12 @@ export class CoworkStore {
       system_prompt: string;
       identity: string;
       model: string;
+      working_directory?: string | null;
       icon: string;
       skill_ids: string;
       enabled: number;
+      pinned?: number | null;
+      pin_order?: number | null;
       is_default: number;
       source: string;
       preset_id: string;
@@ -1919,9 +2019,12 @@ export class CoworkStore {
       system_prompt: string;
       identity: string;
       model: string;
+      working_directory?: string | null;
       icon: string;
       skill_ids: string;
       enabled: number;
+      pinned?: number | null;
+      pin_order?: number | null;
       is_default: number;
       source: string;
       preset_id: string;
@@ -1951,27 +2054,37 @@ export class CoworkStore {
       return this.createAgent({ ...request, id: `${id}-${Date.now()}` });
     }
 
-    this.db
-      .prepare(
-        `
-      INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
-    `,
-      )
-      .run(
-        id,
-        request.name,
-        request.description || '',
-        request.systemPrompt || '',
-        request.identity || '',
-        request.model || '',
-        request.icon || '',
-        JSON.stringify(request.skillIds || []),
-        request.source || 'custom',
-        request.presetId || '',
-        now,
-        now,
-      );
+    let removedOrphanSessionCount = 0;
+    const createAgent = this.db.transaction(() => {
+      removedOrphanSessionCount = this.deleteSessionsForAgent(id).length;
+
+      this.db
+        .prepare(
+          `
+        INSERT INTO agents (id, name, description, system_prompt, identity, model, working_directory, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+      `,
+        )
+        .run(
+          id,
+          request.name,
+          request.description || '',
+          request.systemPrompt || '',
+          request.identity || '',
+          request.model || '',
+          request.workingDirectory || '',
+          normalizeAgentAvatarIcon(request.icon),
+          JSON.stringify(request.skillIds || []),
+          request.source || 'custom',
+          request.presetId || '',
+          now,
+          now,
+        );
+    });
+    createAgent();
+    if (removedOrphanSessionCount > 0) {
+      this.markOrphanImplicitMemoriesStale();
+    }
 
     return this.getAgent(id)!;
   }
@@ -1981,7 +2094,7 @@ export class CoworkStore {
     if (!normalizedModelId) return 0;
 
     const result = this.db
-      .prepare('UPDATE agents SET model = ?, updated_at = ? WHERE TRIM(COALESCE(model, \'\')) = \'\'')
+      .prepare("UPDATE agents SET model = ?, updated_at = ? WHERE TRIM(COALESCE(model, '')) = ''")
       .run(normalizedModelId, Date.now());
 
     return result.changes;
@@ -2015,9 +2128,13 @@ export class CoworkStore {
       setClauses.push('model = ?');
       values.push(updates.model);
     }
+    if (updates.workingDirectory !== undefined) {
+      setClauses.push('working_directory = ?');
+      values.push(updates.workingDirectory);
+    }
     if (updates.icon !== undefined) {
       setClauses.push('icon = ?');
-      values.push(updates.icon);
+      values.push(normalizeAgentAvatarIcon(updates.icon));
     }
     if (updates.skillIds !== undefined) {
       setClauses.push('skill_ids = ?');
@@ -2027,6 +2144,18 @@ export class CoworkStore {
       setClauses.push('enabled = ?');
       values.push(updates.enabled ? 1 : 0);
     }
+    if (updates.pinned !== undefined) {
+      setClauses.push('pinned = ?');
+      values.push(updates.pinned ? 1 : 0);
+      if (updates.pinned) {
+        const currentPinOrder = existing.pinOrder ?? null;
+        const nextPinOrder = currentPinOrder ?? this.getNextAgentPinOrder();
+        setClauses.push('pin_order = ?');
+        values.push(nextPinOrder);
+      } else {
+        setClauses.push('pin_order = NULL');
+      }
+    }
 
     values.push(id);
     this.db.prepare(`UPDATE agents SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
@@ -2034,9 +2163,23 @@ export class CoworkStore {
   }
 
   deleteAgent(id: string): boolean {
-    if (id === 'main') return false; // Cannot delete default agent
-    this.db.prepare('DELETE FROM agents WHERE id = ? AND is_default = 0').run(id);
-    return true;
+    if (id === AgentId.Main) return false; // Cannot delete default agent
+
+    const deleteAgent = this.db.transaction((agentId: string): boolean => {
+      const result = this.db.prepare('DELETE FROM agents WHERE id = ? AND is_default = 0').run(agentId);
+      if (result.changes === 0) {
+        return false;
+      }
+
+      this.deleteSessionsForAgent(agentId);
+      return true;
+    });
+
+    const deleted = deleteAgent(id);
+    if (deleted) {
+      this.markOrphanImplicitMemoriesStale();
+    }
+    return deleted;
   }
 
   private mapAgentRow(row: {
@@ -2046,9 +2189,12 @@ export class CoworkStore {
     system_prompt: string;
     identity: string;
     model: string;
+    working_directory?: string | null;
     icon: string;
     skill_ids: string;
     enabled: number;
+    pinned?: number | null;
+    pin_order?: number | null;
     is_default: number;
     source: string;
     preset_id: string;
@@ -2068,14 +2214,123 @@ export class CoworkStore {
       systemPrompt: row.system_prompt,
       identity: row.identity,
       model: row.model,
+      workingDirectory: row.working_directory || '',
       icon: row.icon,
       skillIds,
       enabled: Boolean(row.enabled),
+      pinned: Boolean(row.pinned),
+      pinOrder: row.pinned ? (row.pin_order ?? null) : null,
       isDefault: Boolean(row.is_default),
       source: row.source as AgentSource,
       presetId: row.preset_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+    };
+  }
+
+  private getNextAgentPinOrder(): number {
+    const row = this.getOne<{ max_order: number | null }>(
+      'SELECT MAX(pin_order) as max_order FROM agents WHERE pinned = 1',
+    );
+    return (row?.max_order ?? 0) + 1;
+  }
+
+  // ─── User Plugins ───────────────────────────────────────────────────
+
+  listUserPlugins(): UserInstalledPlugin[] {
+    const rows = this.getAll<{
+      plugin_id: string;
+      source: string;
+      spec: string;
+      registry: string | null;
+      version: string | null;
+      enabled: number;
+      installed_at: number;
+      config: string | null;
+    }>('SELECT * FROM user_plugins ORDER BY installed_at ASC');
+
+    return rows.map(row => ({
+      pluginId: row.plugin_id,
+      source: row.source as PluginSource,
+      spec: row.spec,
+      registry: row.registry || undefined,
+      version: row.version || undefined,
+      enabled: Boolean(row.enabled),
+      installedAt: row.installed_at,
+      config: row.config ? JSON.parse(row.config) as Record<string, unknown> : undefined,
+    }));
+  }
+
+  addUserPlugin(plugin: UserInstalledPlugin): void {
+    this.db.prepare(
+      `INSERT INTO user_plugins (plugin_id, source, spec, registry, version, enabled, installed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(plugin_id) DO UPDATE SET
+         source = excluded.source,
+         spec = excluded.spec,
+         registry = excluded.registry,
+         version = excluded.version,
+         enabled = excluded.enabled,
+         installed_at = excluded.installed_at`,
+    ).run(
+      plugin.pluginId,
+      plugin.source,
+      plugin.spec,
+      plugin.registry || null,
+      plugin.version || null,
+      plugin.enabled ? 1 : 0,
+      plugin.installedAt,
+    );
+  }
+
+  removeUserPlugin(pluginId: string): void {
+    this.db.prepare('DELETE FROM user_plugins WHERE plugin_id = ?').run(pluginId);
+  }
+
+  setUserPluginEnabled(pluginId: string, enabled: boolean): void {
+    this.db.prepare('UPDATE user_plugins SET enabled = ? WHERE plugin_id = ?')
+      .run(enabled ? 1 : 0, pluginId);
+  }
+
+  getUserPluginConfig(pluginId: string): Record<string, unknown> | null {
+    const row = this.getOne<{ config: string | null }>(
+      'SELECT config FROM user_plugins WHERE plugin_id = ?', [pluginId],
+    );
+    if (!row?.config) return null;
+    try {
+      return JSON.parse(row.config) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  setUserPluginConfig(pluginId: string, config: Record<string, unknown>): void {
+    this.db.prepare('UPDATE user_plugins SET config = ? WHERE plugin_id = ?')
+      .run(JSON.stringify(config), pluginId);
+  }
+
+  getUserPlugin(pluginId: string): UserInstalledPlugin | undefined {
+    const row = this.getOne<{
+      plugin_id: string;
+      source: string;
+      spec: string;
+      registry: string | null;
+      version: string | null;
+      enabled: number;
+      installed_at: number;
+      config: string | null;
+    }>('SELECT * FROM user_plugins WHERE plugin_id = ?', [pluginId]);
+
+    if (!row) return undefined;
+    return {
+      pluginId: row.plugin_id,
+      source: row.source as PluginSource,
+      spec: row.spec,
+      registry: row.registry || undefined,
+      version: row.version || undefined,
+      enabled: Boolean(row.enabled),
+      installedAt: row.installed_at,
+      config: row.config ? JSON.parse(row.config) as Record<string, unknown> : undefined,
     };
   }
 }

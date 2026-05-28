@@ -1,7 +1,24 @@
 import { store } from '../store';
-import { setAuthLoading, setLoggedIn, setLoggedOut, updateQuota, setProfileSummary } from '../store/slices/authSlice';
-import { setServerModels, clearServerModels } from '../store/slices/modelSlice';
+import {
+  setAuthLoading,
+  setLoggedIn,
+  setLoggedOut,
+  setProfileSummary,
+  updateQuota,
+  type UserProfile,
+  type UserQuota,
+} from '../store/slices/authSlice';
 import type { Model } from '../store/slices/modelSlice';
+import {
+  clearServerModels,
+  setServerModels,
+} from '../store/slices/modelSlice';
+
+interface AuthStateRefreshResult {
+  isLoggedIn: boolean;
+  user: UserProfile | null;
+  quota: UserQuota | null;
+}
 
 class AuthService {
   private unsubCallback: (() => void) | null = null;
@@ -17,22 +34,25 @@ class AuthService {
     this.destroy();
 
     store.dispatch(setAuthLoading(true));
-    try {
-      const result = await window.electron.auth.getUser();
-      if (result.success && result.user) {
-        store.dispatch(setLoggedIn({ user: result.user, quota: result.quota }));
-        await this.loadServerModels();
-      } else {
-        store.dispatch(setLoggedOut());
-      }
-    } catch {
-      store.dispatch(setLoggedOut());
-    }
 
     // Listen for OAuth callback from protocol handler
     this.unsubCallback = window.electron.auth.onCallback(async ({ code }) => {
       await this.handleCallback(code);
     });
+
+    try {
+      const pendingCode = await window.electron.auth.getPendingCallback();
+      let handledPendingCode = false;
+      if (pendingCode) {
+        handledPendingCode = await this.handleCallback(pendingCode);
+      }
+      if (!handledPendingCode) {
+        await this.refreshAuthState({ clearOnFailure: true });
+      }
+    } catch {
+      store.dispatch(setLoggedOut());
+      store.dispatch(clearServerModels());
+    }
 
     // Listen for quota changes (e.g. after cowork session using server model)
     this.unsubQuotaChanged = window.electron.auth.onQuotaChanged(() => {
@@ -62,7 +82,7 @@ class AuthService {
   }
 
   /**
-   * Fetch login URL from overmind, fallback to server base + /login.
+   * Fetch login URL from overmind, fallback to Portal login page.
    */
   private async fetchLoginUrl(): Promise<string> {
     const { getLoginOvermindUrl } = await import('./endpoints');
@@ -82,23 +102,57 @@ class AuthService {
     } catch (e) {
       console.error('[Auth] Failed to fetch login URL from overmind:', e);
     }
-    // Fallback: let main process use its server base URL
-    return '';
+    // Fallback: use Portal login page directly
+    const { getPortalLoginUrl } = await import('./endpoints');
+    return getPortalLoginUrl();
   }
 
   /**
    * Handle OAuth callback with auth code.
    */
-  async handleCallback(code: string) {
+  async handleCallback(code: string): Promise<boolean> {
     try {
       const result = await window.electron.auth.exchange(code);
       if (result.success) {
         store.dispatch(setLoggedIn({ user: result.user, quota: result.quota }));
         await this.loadServerModels();
+        this.refreshQuota();
+        return true;
       }
     } catch (e) {
       console.error('Auth callback failed:', e);
     }
+    return false;
+  }
+
+  /**
+   * Refresh the full auth snapshot from persisted tokens.
+   */
+  async refreshAuthState(
+    options: { clearOnFailure?: boolean } = {},
+  ): Promise<AuthStateRefreshResult> {
+    try {
+      const result = await window.electron.auth.getUser();
+      if (result.success && result.user) {
+        store.dispatch(setLoggedIn({ user: result.user, quota: result.quota }));
+        await this.loadServerModels();
+        return { isLoggedIn: true, user: result.user, quota: result.quota ?? null };
+      }
+    } catch {
+      // handled below
+    }
+
+    if (options.clearOnFailure) {
+      store.dispatch(setLoggedOut());
+      store.dispatch(clearServerModels());
+    }
+
+    const current = store.getState().auth;
+    return {
+      isLoggedIn: current.isLoggedIn,
+      user: current.user,
+      quota: current.quota,
+    };
   }
 
   /**
@@ -165,7 +219,7 @@ class AuthService {
     try {
       const modelsResult = await window.electron.auth.getModels();
       if (modelsResult.success && modelsResult.models) {
-        const serverModels: Model[] = modelsResult.models.map((m: { modelId: string; modelName: string; provider: string; apiFormat: string; supportsImage?: boolean }) => ({
+        const serverModels: Model[] = modelsResult.models.map((m: { modelId: string; modelName: string; provider: string; apiFormat: string; supportsImage?: boolean; supportsThinking?: boolean; costMultiplier?: number; description?: string; accessible?: boolean; restrictionHint?: string }) => ({
           id: m.modelId,
           name: m.modelName,
           provider: m.provider,
@@ -173,6 +227,11 @@ class AuthService {
           isServerModel: true,
           serverApiFormat: m.apiFormat,
           supportsImage: m.supportsImage ?? false,
+          supportsThinking: m.supportsThinking ?? false,
+          description: m.description,
+          costMultiplier: m.costMultiplier,
+          accessible: m.accessible ?? true,
+          restrictionHint: m.restrictionHint ?? undefined,
         }));
         store.dispatch(setServerModels(serverModels));
       }

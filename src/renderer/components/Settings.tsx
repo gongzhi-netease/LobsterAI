@@ -1,20 +1,24 @@
-import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
-import { ArrowTopRightOnSquareIcon, ChatBubbleLeftIcon, CheckCircleIcon, Cog6ToothIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, InformationCircleIcon, KeyIcon, ShieldCheckIcon,SignalIcon, UserCircleIcon, XCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { ChatBubbleLeftIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, GlobeAltIcon, InformationCircleIcon, SunIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import React, { useCallback,useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { ProviderName, ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
-import { type AppConfig, defaultConfig, getCustomProviderDefaultName, getProviderDisplayName, getVisibleProviders, isCustomProvider } from '../config';
+
+import { type AppUpdateInfo,type AppUpdateRuntimeState,AppUpdateSource,AppUpdateStatus } from '../../shared/appUpdate/constants';
+import {
+  type BrowserWebAccessConfig,
+  defaultBrowserWebAccessConfig,
+  normalizeBrowserWebAccessConfig,
+} from '../../shared/browserWebAccess/constants';
+import { ProviderAuthType, ProviderName, ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
+import { type AppConfig, defaultConfig, getProviderDisplayName, getVisibleProviders } from '../config';
 import { APP_ID, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
-import { getProviderIcon } from '../providers/uiRegistry';
 import { apiService } from '../services/api';
-import type { AppUpdateInfo } from '../services/appUpdate';
-import { checkForAppUpdate } from '../services/appUpdate';
 import { configService } from '../services/config';
 import { coworkService } from '../services/cowork';
 import { decryptSecret, decryptWithPassword, EncryptedPayload, encryptWithPassword, PasswordEncryptedPayload } from '../services/encryption';
 import { i18nService, LanguageType } from '../services/i18n';
 import { imService } from '../services/im';
 import { themeService } from '../services/theme';
+import type { RootState } from '../store';
 import { selectCoworkConfig } from '../store/selectors/coworkSelectors';
 import { setAvailableModels } from '../store/slices/modelSlice';
 import type {
@@ -22,20 +26,82 @@ import type {
   CoworkMemoryStats,
   CoworkUserMemoryEntry,
   OpenClawEngineStatus,
-  OpenClawSessionKeepAlive as OpenClawSessionKeepAliveValue,
+  OpenClawSessionKeepAlive,
 } from '../types/cowork';
+import { OpenClawSessionKeepAlive as OpenClawSessionKeepAliveValues } from '../types/cowork';
 import Modal from './common/Modal';
+import DreamingSettingsSection from './cowork/DreamingSettingsSection';
+import EmbeddingSettingsSection from './cowork/EmbeddingSettingsSection';
 import ErrorMessage from './ErrorMessage';
 import BrainIcon from './icons/BrainIcon';
-import PencilIcon from './icons/PencilIcon';
+import PlugIcon from './icons/PlugIcon';
 import PlusCircleIcon from './icons/PlusCircleIcon';
-import { GitHubCopilotIcon } from './icons/providers';
-import TrashIcon from './icons/TrashIcon';
 import IMSettings from './im/IMSettings';
+import PluginsSettings from './plugins/PluginsSettings';
+import BrowserWebAccessSettings from './settings/BrowserWebAccessSettings';
+import {
+  buildOpenAICompatibleChatCompletionsUrl,
+  buildOpenAIResponsesUrl,
+  CONNECTIVITY_TEST_TOKEN_BUDGET,
+  CUSTOM_PROVIDER_KEYS,
+  getDefaultActiveProvider,
+  getDefaultProviders,
+  getEffectiveApiFormat,
+  getOpenClawProviderIdForConfig,
+  getProviderDefaultBaseUrl,
+  hasProviderAuthConfigured,
+  type Model,
+  type ProviderConfig,
+  providerKeys,
+  providerRequiresApiKey,
+  type ProvidersConfig,
+  type ProviderType,
+  resolveBaseUrl,
+  resolveModelSupportsImageForProvider,
+  shouldAutoSwitchProviderBaseUrl,
+  shouldUseMaxCompletionTokensForOpenAI,
+  shouldUseOpenAIResponsesForProvider,
+} from './settings/modelProviderUtils';
+import ModelSettingsSection, { ModelEditorDialog } from './settings/ModelSettingsSection';
 import EmailSkillConfig from './skills/EmailSkillConfig';
 import ThemedSelect from './ui/ThemedSelect';
 
-type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkMemory' | 'coworkAgent' | 'shortcuts' | 'im' | 'email' | 'about';
+type TabType = 'general' | 'appearance' | 'coworkAgentEngine' | 'model' | 'browserWebAccess' | 'coworkMemory' | 'coworkDreaming' | 'shortcuts' | 'im' | 'email' | 'plugins' | 'about';
+
+const SettingsSlidersIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+  >
+    <path d="M14 17H5" />
+    <path d="M19 7h-9" />
+    <circle cx="17" cy="17" r="3" />
+    <circle cx="7" cy="7" r="3" />
+  </svg>
+);
+
+const DreamingTabIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg
+    width="34"
+    height="34"
+    viewBox="0 0 34 34"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    className={className}
+    aria-hidden="true"
+  >
+    <path
+      d="M27.9219 21.9648L29.014 22.4621L29.8552 20.6145L27.831 20.7683L27.9219 21.9648ZM16.0762 5.03516L17.1683 5.53234L18.0095 3.68449L15.9851 3.83862L16.0762 5.03516ZM27.9219 21.9648L26.8297 21.4676C25.1281 25.205 21.3674 27.8 17 27.8V29V30.2C22.3442 30.2 26.9378 27.0221 29.014 22.4621L27.9219 21.9648ZM17 29V27.8C11.0353 27.8 6.2 22.9647 6.2 17H5H3.8C3.8 24.2902 9.70984 30.2 17 30.2V29ZM5 17H6.2C6.2 11.3157 10.5923 6.65614 16.1673 6.23169L16.0762 5.03516L15.9851 3.83862C9.16855 4.35759 3.8 10.0512 3.8 17H5ZM16.0762 5.03516L14.984 4.53798C14.2262 6.20275 13.8 8.052 13.8 10H15H16.2C16.2 8.40537 16.5483 6.8944 17.1683 5.53234L16.0762 5.03516ZM15 10H13.8C13.8 17.2902 19.7098 23.2 27 23.2V22V20.8C21.0353 20.8 16.2 15.9647 16.2 10H15ZM27 22V23.2C27.3413 23.2 27.679 23.1868 28.0128 23.1614L27.9219 21.9648L27.831 20.7683C27.5562 20.7892 27.2791 20.8 27 20.8V22Z"
+      fill="currentColor"
+    />
+  </svg>
+);
 
 export type SettingsOpenOptions = {
   initialTab?: TabType;
@@ -54,22 +120,6 @@ interface SettingsProps extends SettingsOpenOptions {
 }
 
 
-const CUSTOM_PROVIDER_KEYS = [
-  'custom_0', 'custom_1', 'custom_2', 'custom_3', 'custom_4',
-  'custom_5', 'custom_6', 'custom_7', 'custom_8', 'custom_9',
-] as const;
-
-const providerKeys = [
-  ...Object.values(ProviderName).filter(id => id !== ProviderName.Custom && id !== ProviderName.LobsteraiServer),
-  ...CUSTOM_PROVIDER_KEYS,
-] as const;
-
-type BuiltinProviderType = ProviderName;
-type CustomProviderType = (typeof CUSTOM_PROVIDER_KEYS)[number];
-type ProviderType = BuiltinProviderType | CustomProviderType;
-type ProvidersConfig = NonNullable<AppConfig['providers']>;
-type ProviderConfig = ProvidersConfig[string];
-type Model = NonNullable<ProviderConfig['models']>[number];
 type ProviderConnectionTestResult = {
   success: boolean;
   message: string;
@@ -119,25 +169,6 @@ interface ProvidersImportPayload {
   providers?: Record<string, ProvidersImportEntry>;
 }
 
-const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama' && provider !== 'github-copilot';
-const hasProviderAuthConfigured = (provider: ProviderType, config: ProviderConfig): boolean => {
-  if (provider === 'ollama') {
-    return true;
-  }
-
-  if (provider === 'minimax') {
-    if (config.authType === 'apikey') {
-      return config.apiKey.trim().length > 0;
-    }
-    return (config.oauthAccessToken?.trim().length ?? 0) > 0;
-  }
-
-  return config.apiKey.trim().length > 0;
-};
-const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '').toLowerCase();
-const normalizeApiFormat = (value: unknown): 'anthropic' | 'openai' => (
-  value === 'openai' ? 'openai' : 'anthropic'
-);
 const ABOUT_CONTACT_EMAIL = 'lobsterai.project@rd.netease.com';
 const ABOUT_USER_MANUAL_URL = 'https://lobsterai.youdao.com/#/docs/lobsterai_user_manual';
 const ABOUT_USER_COMMUNITY_URL = 'https://lobsterai.youdao.com/#/about';
@@ -212,166 +243,24 @@ const copyTextToClipboard = async (text: string): Promise<boolean> => {
   }
 };
 
-const getFixedApiFormatForProvider = (provider: string): 'anthropic' | 'openai' | 'gemini' | null => {
-  if (provider === 'openai' || provider === 'stepfun') {
-    return 'openai';
+const getUpdateCheckStatusFromRuntimeStatus = (
+  state: AppUpdateRuntimeState,
+): 'idle' | 'checking' | 'upToDate' | 'error' | 'downloading' | 'ready' => {
+  if (state.source !== AppUpdateSource.Manual) {
+    return 'idle';
   }
-  if (provider === 'youdaozhiyun' || provider === 'github-copilot') {
-    return 'openai';
+  switch (state.status) {
+    case AppUpdateStatus.Checking:
+      return 'checking';
+    case AppUpdateStatus.Downloading:
+      return 'downloading';
+    case AppUpdateStatus.Ready:
+      return 'ready';
+    case AppUpdateStatus.Error:
+      return 'error';
+    default:
+      return 'idle';
   }
-  // Moonshot /anthropic endpoint does not fully implement the Anthropic Messages
-  // spec (tool use, streaming, etc.), so the Claude Agent SDK cannot use it.
-  // Force OpenAI format — requests go through the built-in compat proxy instead.
-  if (provider === 'moonshot') {
-    return 'openai';
-  }
-  if (provider === 'anthropic') {
-    return 'anthropic';
-  }
-  if (provider === 'gemini') {
-    return 'gemini';
-  }
-  return null;
-};
-const getEffectiveApiFormat = (provider: string, value: unknown): 'anthropic' | 'openai' | 'gemini' => (
-  getFixedApiFormatForProvider(provider) ?? normalizeApiFormat(value)
-);
-const shouldShowApiFormatSelector = (provider: string): boolean => (
-  getFixedApiFormatForProvider(provider) === null
-);
-const getProviderDefaultBaseUrl = (
-  provider: ProviderType,
-  apiFormat: 'anthropic' | 'openai' | 'gemini'
-): string | null => {
-  if (apiFormat === 'gemini') return null;
-  return ProviderRegistry.getSwitchableBaseUrl(provider, apiFormat) ?? null;
-};
-const resolveBaseUrl = (
-  provider: ProviderType,
-  baseUrl: string,
-  apiFormat: 'anthropic' | 'openai' | 'gemini'
-): string => {
-  if (baseUrl.trim()) {
-    if (shouldAutoSwitchProviderBaseUrl(provider, baseUrl) && (apiFormat === 'anthropic' || apiFormat === 'openai')) {
-      const switchedUrl = ProviderRegistry.getSwitchableBaseUrl(provider, apiFormat);
-      if (switchedUrl) return switchedUrl;
-    }
-    return baseUrl;
-  }
-  return getProviderDefaultBaseUrl(provider, apiFormat)
-    || defaultConfig.providers?.[provider]?.baseUrl
-    || '';
-};
-const shouldAutoSwitchProviderBaseUrl = (provider: ProviderType, currentBaseUrl: string): boolean => {
-  const anthropicUrl = ProviderRegistry.getSwitchableBaseUrl(provider, 'anthropic');
-  const openaiUrl = ProviderRegistry.getSwitchableBaseUrl(provider, 'openai');
-  if (!anthropicUrl && !openaiUrl) {
-    return false;
-  }
-
-  const normalizedCurrent = normalizeBaseUrl(currentBaseUrl);
-  return (
-    (anthropicUrl ? normalizedCurrent === normalizeBaseUrl(anthropicUrl) : false)
-    || (openaiUrl ? normalizedCurrent === normalizeBaseUrl(openaiUrl) : false)
-  );
-};
-const buildOpenAICompatibleChatCompletionsUrl = (baseUrl: string, provider: string): string => {
-  const normalized = baseUrl.trim().replace(/\/+$/, '');
-  if (!normalized) {
-    return '/v1/chat/completions';
-  }
-  if (normalized.endsWith('/chat/completions')) {
-    return normalized;
-  }
-
-  const isGeminiLike = provider === 'gemini' || normalized.includes('generativelanguage.googleapis.com');
-  if (isGeminiLike) {
-    if (normalized.endsWith('/v1beta/openai') || normalized.endsWith('/v1/openai')) {
-      return `${normalized}/chat/completions`;
-    }
-    if (normalized.endsWith('/v1beta') || normalized.endsWith('/v1')) {
-      const betaBase = normalized.endsWith('/v1')
-        ? `${normalized.slice(0, -3)}v1beta`
-        : normalized;
-      return `${betaBase}/openai/chat/completions`;
-    }
-    return `${normalized}/v1beta/openai/chat/completions`;
-  }
-
-  if (provider === 'github-copilot') {
-    return `${normalized}/chat/completions`;
-  }
-
-  // Handle /v1, /v4 etc. versioned paths
-  if (/\/v\d+$/.test(normalized)) {
-    return `${normalized}/chat/completions`;
-  }
-  return `${normalized}/v1/chat/completions`;
-};
-const buildOpenAIResponsesUrl = (baseUrl: string): string => {
-  const normalized = baseUrl.trim().replace(/\/+$/, '');
-  if (!normalized) {
-    return '/v1/responses';
-  }
-  if (normalized.endsWith('/responses')) {
-    return normalized;
-  }
-  if (normalized.endsWith('/v1')) {
-    return `${normalized}/responses`;
-  }
-  return `${normalized}/v1/responses`;
-};
-const shouldUseOpenAIResponsesForProvider = (provider: string): boolean => (
-  provider === 'openai'
-);
-const shouldUseMaxCompletionTokensForOpenAI = (provider: string, modelId?: string): boolean => {
-  if (provider !== 'openai') {
-    return false;
-  }
-  const normalizedModel = (modelId ?? '').toLowerCase();
-  const resolvedModel = normalizedModel.includes('/')
-    ? normalizedModel.slice(normalizedModel.lastIndexOf('/') + 1)
-    : normalizedModel;
-  return resolvedModel.startsWith('gpt-5')
-    || resolvedModel.startsWith('o1')
-    || resolvedModel.startsWith('o3')
-    || resolvedModel.startsWith('o4');
-};
-const CONNECTIVITY_TEST_TOKEN_BUDGET = 64;
-
-const getDefaultProviders = (): ProvidersConfig => {
-  const providers = (defaultConfig.providers ?? {}) as ProvidersConfig;
-  const entries = Object.entries(providers) as Array<[string, ProviderConfig]>;
-  const secureSuffix = i18nService.t('modelSuffixSecure');
-  return Object.fromEntries(
-    entries.map(([providerKey, providerConfig]) => [
-      providerKey,
-      {
-        ...providerConfig,
-        models: providerConfig.models?.map(model => ({
-          ...model,
-          name: model.name.replace('(Secure)', secureSuffix),
-          supportsImage: model.supportsImage ?? false,
-        })),
-      },
-    ])
-  ) as ProvidersConfig;
-};
-
-const getDefaultActiveProvider = (): ProviderType => {
-  const providers = (defaultConfig.providers ?? {}) as ProvidersConfig;
-  const firstEnabledProvider = providerKeys.find(providerKey => providers[providerKey]?.enabled);
-  return firstEnabledProvider ?? providerKeys[0];
-};
-
-/** Join workspace directory with a filename using platform-aware separator. */
-const joinWorkspacePath = (dir: string | undefined, filename: string): string => {
-  const base = dir?.trim() || '~/.openclaw/workspace';
-  const sep = window.electron.platform === 'win32' ? '\\' : '/';
-  // Normalize: if base already ends with a separator, don't double it
-  return base.endsWith(sep) || base.endsWith('/') || base.endsWith('\\')
-    ? `${base}${filename}`
-    : `${base}${sep}${filename}`;
 };
 
 // System shortcuts that should not be captured (clipboard, undo, select-all, quit, etc.)
@@ -517,6 +406,62 @@ const SendShortcutSelect: React.FC<{ value: string; onChange: (v: string) => voi
   );
 };
 
+const SettingsSwitch: React.FC<{
+  checked: boolean;
+  label: string;
+  disabled?: boolean;
+  onClick: () => void | Promise<void>;
+}> = ({ checked, label, disabled, onClick }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    aria-label={label}
+    onClick={() => {
+      void onClick();
+    }}
+    disabled={disabled}
+    className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+      disabled ? 'opacity-50 cursor-not-allowed' : ''
+    } ${
+      checked
+        ? 'bg-primary'
+        : 'bg-gray-300 dark:bg-gray-600'
+    }`}
+  >
+    <span
+      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+        checked ? 'translate-x-6' : 'translate-x-1'
+      }`}
+    />
+  </button>
+);
+
+const SettingsToggleRow: React.FC<{
+  title: string;
+  description: string;
+  checked: boolean;
+  disabled?: boolean;
+  onToggle: () => void | Promise<void>;
+}> = ({ title, description, checked, disabled, onToggle }) => (
+  <div>
+    <div className="flex items-center justify-between gap-4">
+      <h4 className="min-w-0 flex-1 text-sm font-medium text-foreground">
+        {title}
+      </h4>
+      <SettingsSwitch
+        checked={checked}
+        label={title}
+        disabled={disabled}
+        onClick={onToggle}
+      />
+    </div>
+    <p className="mt-3 text-sm text-secondary">
+      {description}
+    </p>
+  </div>
+);
+
 const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, noticeI18nKey, noticeExtra, onUpdateFound, enterpriseConfig }) => {
   const dispatch = useDispatch();
   // 状态
@@ -526,6 +471,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [language, setLanguage] = useState<LanguageType>('zh');
   const [autoLaunch, setAutoLaunchState] = useState(false);
   const [useSystemProxy, setUseSystemProxy] = useState(false);
+  const [sqliteAutoBackupEnabled, setSqliteAutoBackupEnabled] = useState(false);
+  const [browserWebAccess, setBrowserWebAccess] = useState<BrowserWebAccessConfig>(() => ({
+    ...defaultBrowserWebAccessConfig,
+    webFetch: { ...defaultBrowserWebAccessConfig.webFetch },
+  }));
   const [isUpdatingAutoLaunch, setIsUpdatingAutoLaunch] = useState(false);
   const [preventSleep, setPreventSleepState] = useState(false);
   const [isUpdatingPreventSleep, setIsUpdatingPreventSleep] = useState(false);
@@ -560,13 +510,28 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [minimaxOAuthRegion, setMinimaxOAuthRegion] = useState<MiniMaxRegion>('cn');
   const minimaxOAuthCancelRef = useRef(false);
 
+  // OpenAI ChatGPT (Codex) OAuth state
+  type OpenAIOAuthPhase =
+    | { kind: 'idle' }
+    | { kind: 'pending' }
+    | { kind: 'success'; email?: string }
+    | { kind: 'error'; message: string };
+  const [openaiOAuthPhase, setOpenaiOAuthPhase] = useState<OpenAIOAuthPhase>({ kind: 'idle' });
+  // Mirrors <CODEX_HOME>/auth.json on disk; refreshed on tab focus and after
+  // login/logout. `null` = not yet checked.
+  const [openaiOAuthStatus, setOpenaiOAuthStatus] = useState<
+    { loggedIn: false } | { loggedIn: true; email?: string } | null
+  >(null);
+
   // Add state for providers configuration
   const [providers, setProviders] = useState<ProvidersConfig>(() => getDefaultProviders());
 
 
   // authType defaults to undefined on first open, which should behave as OAuth mode
   const minimaxIsOAuthMode = providers.minimax.authType !== 'apikey';
-  const isBaseUrlLocked = (activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled) || (activeProvider === 'qwen' && providers.qwen.codingPlanEnabled) || (activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled) || (activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled) || (activeProvider === 'minimax' && minimaxIsOAuthMode);
+  // OpenAI defaults to API key mode unless the user explicitly opts in to OAuth
+  const openaiIsOAuthMode = providers.openai.authType === 'oauth';
+  const isBaseUrlLocked = (activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled) || (activeProvider === 'qwen' && providers.qwen.codingPlanEnabled) || (activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled) || (activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled) || (activeProvider === 'qianfan' && providers.qianfan.codingPlanEnabled) || (activeProvider === 'xiaomi' && providers.xiaomi.codingPlanEnabled) || (activeProvider === 'minimax' && minimaxIsOAuthMode) || (activeProvider === 'openai' && openaiIsOAuthMode);
 
   // 创建引用来确保内容区域的滚动
   const contentRef = useRef<HTMLDivElement>(null);
@@ -596,6 +561,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [newModelName, setNewModelName] = useState('');
   const [newModelId, setNewModelId] = useState('');
   const [newModelSupportsImage, setNewModelSupportsImage] = useState(false);
+  const [newModelContextWindow, setNewModelContextWindow] = useState<number | undefined>(undefined);
+  const [newModelCustomParams, setNewModelCustomParams] = useState<string>('');
   const [modelFormError, setModelFormError] = useState<string | null>(null);
 
   // About tab
@@ -605,7 +572,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [testMode, setTestMode] = useState(false);
   const [logoClickCount, setLogoClickCount] = useState(0);
   const [testModeUnlocked, setTestModeUnlocked] = useState(false);
-  const [updateCheckStatus, setUpdateCheckStatus] = useState<'idle' | 'checking' | 'upToDate' | 'error'>('idle');
+  const [updateCheckStatus, setUpdateCheckStatus] = useState<'idle' | 'checking' | 'upToDate' | 'error' | 'downloading' | 'ready'>('idle');
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateRuntimeState | null>(null);
 
   useEffect(() => {
     window.electron.appInfo.getVersion().then(setAppVersion);
@@ -614,6 +582,43 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   useEffect(() => {
     setShowApiKey(false);
   }, [activeProvider]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const syncUpdateStatus = async () => {
+      try {
+        const state = await window.electron.appUpdate.getState();
+        if (!mounted) {
+          return;
+        }
+        setAppUpdateState(state);
+        setUpdateCheckStatus(getUpdateCheckStatusFromRuntimeStatus(state));
+      } catch (error) {
+        console.error('Failed to load app update state in settings:', error);
+      }
+    };
+
+    void syncUpdateStatus();
+
+    const unsubscribe = window.electron.appUpdate.onStateChanged((state) => {
+      if (
+        updateCheckTimerRef.current != null &&
+        state.source === AppUpdateSource.Manual &&
+        state.status !== AppUpdateStatus.Idle
+      ) {
+        window.clearTimeout(updateCheckTimerRef.current);
+        updateCheckTimerRef.current = null;
+      }
+      setAppUpdateState(state);
+      setUpdateCheckStatus(getUpdateCheckStatusFromRuntimeStatus(state));
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
 
   const handleCopyContactEmail = useCallback(async () => {
     const copied = await copyTextToClipboard(ABOUT_CONTACT_EMAIL);
@@ -629,15 +634,18 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     }
   }, []);
 
+  const authUser = useSelector((state: RootState) => state.auth.user);
+
   const handleCheckUpdate = useCallback(async () => {
     if (updateCheckStatus === 'checking' || !appVersion) return;
     setUpdateCheckStatus('checking');
     try {
-      const info = await checkForAppUpdate(appVersion, true);
-      if (info) {
-        setUpdateCheckStatus('idle');
-        onUpdateFound?.(info);
-      } else {
+      const result = await window.electron.appUpdate.checkNow({ manual: true, userId: authUser?.yid });
+      if (!result.success) {
+        throw new Error(result.error || 'Update check failed');
+      }
+
+      if (!result.updateFound) {
         setUpdateCheckStatus('upToDate');
         if (updateCheckTimerRef.current != null) {
           window.clearTimeout(updateCheckTimerRef.current);
@@ -646,6 +654,19 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
           setUpdateCheckStatus('idle');
           updateCheckTimerRef.current = null;
         }, 3000);
+        return;
+      }
+
+      if (result.state.status === AppUpdateStatus.Ready) {
+        setUpdateCheckStatus('ready');
+      } else if (result.state.status === AppUpdateStatus.Downloading) {
+        setUpdateCheckStatus('downloading');
+      } else {
+        setUpdateCheckStatus('idle');
+      }
+
+      if (result.state.info) {
+        onUpdateFound?.(result.state.info);
       }
     } catch {
       setUpdateCheckStatus('error');
@@ -657,7 +678,23 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         updateCheckTimerRef.current = null;
       }, 3000);
     }
-  }, [appVersion, updateCheckStatus, onUpdateFound]);
+  }, [appVersion, authUser, updateCheckStatus, onUpdateFound]);
+
+  const updateButtonLabel = useMemo(() => {
+    if (
+      updateCheckStatus === 'downloading' &&
+      appUpdateState?.progress?.percent != null &&
+      Number.isFinite(appUpdateState.progress.percent)
+    ) {
+      return `${i18nService.t('updateDownloadingBackground')} ${Math.round(appUpdateState.progress.percent * 100)}%`;
+    }
+    if (updateCheckStatus === 'checking') return i18nService.t('updateChecking');
+    if (updateCheckStatus === 'downloading') return i18nService.t('updateDownloadingBackground');
+    if (updateCheckStatus === 'ready') return i18nService.t('updateReadyTitle');
+    if (updateCheckStatus === 'upToDate') return i18nService.t('updateUpToDate');
+    if (updateCheckStatus === 'error') return i18nService.t('updateCheckFailed');
+    return i18nService.t('checkForUpdate');
+  }, [appUpdateState?.progress?.percent, updateCheckStatus]);
 
   const handleOpenUserManual = useCallback(() => {
     void window.electron.shell.openExternal(ABOUT_USER_MANUAL_URL);
@@ -711,9 +748,21 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [coworkAgentEngine, setCoworkAgentEngine] = useState<CoworkAgentEngine>(coworkConfig.agentEngine || 'openclaw');
   const [coworkMemoryEnabled, setCoworkMemoryEnabled] = useState<boolean>(coworkConfig.memoryEnabled ?? true);
   const [coworkMemoryLlmJudgeEnabled, setCoworkMemoryLlmJudgeEnabled] = useState<boolean>(coworkConfig.memoryLlmJudgeEnabled ?? false);
-  const [skipMissedJobs, setSkipMissedJobs] = useState<boolean>(coworkConfig.skipMissedJobs ?? false);
-  const [openClawSessionKeepAlive, setOpenClawSessionKeepAlive] = useState<OpenClawSessionKeepAliveValue>(
-    coworkConfig.openClawSessionPolicy?.keepAlive ?? '30d',
+  const [skipMissedJobs, setSkipMissedJobs] = useState<boolean>(coworkConfig.skipMissedJobs ?? true);
+  const [embeddingEnabled, setEmbeddingEnabled] = useState<boolean>(coworkConfig.embeddingEnabled ?? false);
+  const [embeddingProvider, setEmbeddingProvider] = useState<string>(coworkConfig.embeddingProvider ?? 'openai');
+  const [embeddingModel, setEmbeddingModel] = useState<string>(coworkConfig.embeddingModel ?? '');
+  const [embeddingLocalModelPath, setEmbeddingLocalModelPath] = useState<string>(coworkConfig.embeddingLocalModelPath ?? '');
+  const [embeddingVectorWeight, setEmbeddingVectorWeight] = useState<number>(coworkConfig.embeddingVectorWeight ?? 0.7);
+  const [embeddingRemoteBaseUrl, setEmbeddingRemoteBaseUrl] = useState<string>(coworkConfig.embeddingRemoteBaseUrl ?? '');
+  const [embeddingRemoteApiKey, setEmbeddingRemoteApiKey] = useState<string>(coworkConfig.embeddingRemoteApiKey ?? '');
+  const [dreamingEnabled, setDreamingEnabled] = useState<boolean>(coworkConfig.dreamingEnabled ?? false);
+  const [dreamingFrequency, setDreamingFrequency] = useState<string>(coworkConfig.dreamingFrequency ?? '0 3 * * *');
+  const [dreamingModel, setDreamingModel] = useState<string>(coworkConfig.dreamingModel ?? '');
+  const [dreamingTimezone, setDreamingTimezone] = useState<string>(coworkConfig.dreamingTimezone ?? '');
+  const [memoryTab, setMemoryTab] = useState<'entries' | 'embedding'>('entries');
+  const [openClawSessionKeepAlive, setOpenClawSessionKeepAlive] = useState<OpenClawSessionKeepAlive>(
+    coworkConfig.openClawSessionPolicy?.keepAlive || OpenClawSessionKeepAliveValues.ThirtyDays,
   );
   const [coworkMemoryEntries, setCoworkMemoryEntries] = useState<CoworkUserMemoryEntry[]>([]);
   const [coworkMemoryStats, setCoworkMemoryStats] = useState<CoworkMemoryStats | null>(null);
@@ -722,24 +771,42 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [coworkMemoryEditingId, setCoworkMemoryEditingId] = useState<string | null>(null);
   const [coworkMemoryDraftText, setCoworkMemoryDraftText] = useState<string>('');
   const [showMemoryModal, setShowMemoryModal] = useState<boolean>(false);
-  const [bootstrapIdentity, setBootstrapIdentity] = useState<string>('');
-  const [bootstrapUser, setBootstrapUser] = useState<string>('');
-  const [bootstrapSoul, setBootstrapSoul] = useState<string>('');
-  const [bootstrapLoaded, setBootstrapLoaded] = useState<boolean>(false);
   const [openClawEngineStatus, setOpenClawEngineStatus] = useState<OpenClawEngineStatus | null>(null);
 
   useEffect(() => {
     setCoworkAgentEngine(coworkConfig.agentEngine || 'openclaw');
     setCoworkMemoryEnabled(coworkConfig.memoryEnabled ?? true);
     setCoworkMemoryLlmJudgeEnabled(coworkConfig.memoryLlmJudgeEnabled ?? false);
-    setSkipMissedJobs(coworkConfig.skipMissedJobs ?? false);
-    setOpenClawSessionKeepAlive(coworkConfig.openClawSessionPolicy?.keepAlive ?? '30d');
+    setSkipMissedJobs(coworkConfig.skipMissedJobs ?? true);
+    setEmbeddingEnabled(coworkConfig.embeddingEnabled ?? false);
+    setEmbeddingProvider(coworkConfig.embeddingProvider ?? 'openai');
+    setEmbeddingModel(coworkConfig.embeddingModel ?? '');
+    setEmbeddingLocalModelPath(coworkConfig.embeddingLocalModelPath ?? '');
+    setEmbeddingVectorWeight(coworkConfig.embeddingVectorWeight ?? 0.7);
+    setEmbeddingRemoteBaseUrl(coworkConfig.embeddingRemoteBaseUrl ?? '');
+    setEmbeddingRemoteApiKey(coworkConfig.embeddingRemoteApiKey ?? '');
+    setDreamingEnabled(coworkConfig.dreamingEnabled ?? false);
+    setDreamingFrequency(coworkConfig.dreamingFrequency ?? '0 3 * * *');
+    setDreamingModel(coworkConfig.dreamingModel ?? '');
+    setDreamingTimezone(coworkConfig.dreamingTimezone ?? '');
+    setOpenClawSessionKeepAlive(coworkConfig.openClawSessionPolicy?.keepAlive || OpenClawSessionKeepAliveValues.ThirtyDays);
   }, [
     coworkConfig.agentEngine,
     coworkConfig.memoryEnabled,
     coworkConfig.memoryLlmJudgeEnabled,
-    coworkConfig.skipMissedJobs,
     coworkConfig.openClawSessionPolicy?.keepAlive,
+    coworkConfig.skipMissedJobs,
+    coworkConfig.embeddingEnabled,
+    coworkConfig.embeddingProvider,
+    coworkConfig.embeddingModel,
+    coworkConfig.embeddingLocalModelPath,
+    coworkConfig.embeddingVectorWeight,
+    coworkConfig.embeddingRemoteBaseUrl,
+    coworkConfig.embeddingRemoteApiKey,
+    coworkConfig.dreamingEnabled,
+    coworkConfig.dreamingFrequency,
+    coworkConfig.dreamingModel,
+    coworkConfig.dreamingTimezone,
   ]);
 
   useEffect(() => () => {
@@ -777,6 +844,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       setTheme(config.theme);
       setLanguage(config.language);
       setUseSystemProxy(config.useSystemProxy ?? false);
+      setSqliteAutoBackupEnabled(config.sqliteAutoBackupEnabled === true);
+      setBrowserWebAccess(normalizeBrowserWebAccessConfig(config.browserWebAccess));
       const savedTestMode = config.app?.testMode ?? false;
       setTestMode(savedTestMode);
       if (savedTestMode) setTestModeUnlocked(true);
@@ -932,6 +1001,17 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
               baseUrl: config.api.baseUrl
             }
           }));
+        } else if (normalizedApiBaseUrl.includes('lm-studio') || normalizedApiBaseUrl.includes(':1234')) {
+          setActiveProvider('lm-studio');
+          setProviders(prev => ({
+            ...prev,
+            'lm-studio': {
+              ...prev['lm-studio'],
+              enabled: true,
+              apiKey: config.api.key,
+              baseUrl: config.api.baseUrl
+            }
+          }));
         }
       }
 
@@ -958,12 +1038,16 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                 // Fix corrupted model IDs from previous OAuth mutation bug
                 if (providerKey === 'qwen' && (id === 'vision-model' || id === 'coder-model')) {
                   const defaultModel = defaultConfig.providers?.qwen?.models?.[idx];
-                  id = defaultModel?.id || (model.supportsImage ? 'qwen3.5-plus' : 'qwen3-coder-plus');
+                  id = defaultModel?.id || 'qwen3.5-plus';
                 }
                 return {
                   ...model,
                   id,
-                  supportsImage: model.supportsImage ?? false,
+                  supportsImage: ProviderRegistry.resolveModelSupportsImage(
+                    providerKey,
+                    id,
+                    model.supportsImage,
+                  ),
                 };
               });
               return [
@@ -971,6 +1055,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                 {
                   ...providerConfig,
                   apiFormat: getEffectiveApiFormat(providerKey, (providerConfig as ProviderConfig).apiFormat),
+                  ...(providerKey === ProviderName.Copilot && providerConfig.apiKey?.trim()
+                    ? { authType: ProviderAuthType.OAuth, apiKey: '' }
+                    : {}),
                   models,
                 },
               ];
@@ -1357,11 +1444,109 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setMinimaxOAuthPhase({ kind: 'idle' });
   };
 
+  // Sync the persisted ChatGPT login state into local UI state on mount and
+  // whenever the OpenAI provider tab becomes active. Also reconciles stale
+  // providers config (e.g. auth.json deleted externally).
+  useEffect(() => {
+    let cancelled = false;
+    if (activeProvider !== 'openai') return;
+    void window.electron.openaiCodexOAuth.status().then((status) => {
+      if (cancelled) return;
+      if (status.loggedIn) {
+        setOpenaiOAuthStatus({ loggedIn: true, email: status.email ?? undefined });
+      } else {
+        setOpenaiOAuthStatus({ loggedIn: false });
+        setProviders(prev => {
+          if (prev.openai.authType !== 'oauth') return prev;
+          return { ...prev, openai: { ...prev.openai, authType: 'apikey' } };
+        });
+      }
+    }).catch(() => {
+      if (!cancelled) setOpenaiOAuthStatus({ loggedIn: false });
+    });
+    return () => { cancelled = true; };
+  }, [activeProvider]);
+
+  const persistOpenAIProvidersConfigInBackground = useCallback((nextProviders: ProvidersConfig) => {
+    void configService.updateConfig({ providers: nextProviders }).catch((saveError) => {
+      console.error('[Settings] failed to save OpenAI OAuth provider state:', saveError);
+      setError(i18nService.t('failedToSaveSettings'));
+    });
+  }, []);
+
+  const handleOpenAIOAuthLogin = async () => {
+    setOpenaiOAuthPhase({ kind: 'pending' });
+    try {
+      const result = await window.electron.openaiCodexOAuth.start();
+      if (!result.success) {
+        setOpenaiOAuthPhase({ kind: 'error', message: result.error });
+        return;
+      }
+      const nextProviders: ProvidersConfig = {
+        ...providers,
+        openai: {
+          ...providers.openai,
+          enabled: true,
+          authType: 'oauth',
+        },
+      };
+      setProviders(nextProviders);
+      setOpenaiOAuthStatus({ loggedIn: true, email: result.email ?? undefined });
+      setOpenaiOAuthPhase({ kind: 'success', email: result.email ?? undefined });
+      persistOpenAIProvidersConfigInBackground(nextProviders);
+      setTimeout(() => setOpenaiOAuthPhase({ kind: 'idle' }), 1500);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setOpenaiOAuthPhase({ kind: 'error', message });
+    }
+  };
+
+  const handleCancelOpenAIOAuthLogin = async () => {
+    try {
+      await window.electron.openaiCodexOAuth.cancel();
+    } catch {
+      /* ignore — we still want to reset the UI */
+    }
+    setOpenaiOAuthPhase({ kind: 'idle' });
+  };
+
+  const handleOpenAIOAuthLogout = async () => {
+    const nextOpenAIProvider = {
+      ...providers.openai,
+      enabled: providers.openai.apiKey.trim().length > 0,
+      authType: 'apikey' as const,
+    };
+    const nextProviders: ProvidersConfig = {
+      ...providers,
+      openai: {
+        ...nextOpenAIProvider,
+      },
+    };
+    setProviders(nextProviders);
+    setOpenaiOAuthStatus({ loggedIn: false });
+    setOpenaiOAuthPhase({ kind: 'idle' });
+    persistOpenAIProvidersConfigInBackground(nextProviders);
+    try {
+      await window.electron.openaiCodexOAuth.logout();
+    } catch {
+      /* ignore — file may already be gone */
+    }
+  };
+
   const hasCoworkConfigChanges = coworkAgentEngine !== coworkConfig.agentEngine
     || coworkMemoryEnabled !== coworkConfig.memoryEnabled
     || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled
-    || skipMissedJobs !== (coworkConfig.skipMissedJobs ?? false)
-    || openClawSessionKeepAlive !== (coworkConfig.openClawSessionPolicy?.keepAlive ?? '30d');
+    || skipMissedJobs !== (coworkConfig.skipMissedJobs ?? true)
+    || openClawSessionKeepAlive !== (coworkConfig.openClawSessionPolicy?.keepAlive || OpenClawSessionKeepAliveValues.ThirtyDays)
+    || embeddingEnabled !== (coworkConfig.embeddingEnabled ?? false)
+    || embeddingProvider !== (coworkConfig.embeddingProvider ?? 'openai')
+    || embeddingModel !== (coworkConfig.embeddingModel ?? '')
+    || embeddingLocalModelPath !== (coworkConfig.embeddingLocalModelPath ?? '')
+    || embeddingVectorWeight !== (coworkConfig.embeddingVectorWeight ?? 0.7)
+    || embeddingRemoteBaseUrl !== (coworkConfig.embeddingRemoteBaseUrl ?? '')
+    || embeddingRemoteApiKey !== (coworkConfig.embeddingRemoteApiKey ?? '')
+    || dreamingEnabled !== (coworkConfig.dreamingEnabled ?? false)
+    || dreamingFrequency !== (coworkConfig.dreamingFrequency ?? '0 3 * * *');
   const isOpenClawAgentEngine = coworkAgentEngine === 'openclaw';
 
   const openClawProgressPercent = useMemo(() => {
@@ -1421,38 +1606,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     if (activeTab !== 'coworkMemory') return;
     void loadCoworkMemoryData();
   }, [activeTab, loadCoworkMemoryData]);
-
-  /**
-   * Detect OpenClaw default template content and return empty string.
-   * Templates contain YAML frontmatter and specific marker phrases.
-   */
-  const stripDefaultTemplate = (content: string): string => {
-    if (!content.trim()) return '';
-    const TEMPLATE_MARKERS = [
-      'Fill this in during your first conversation',
-      "You're not a chatbot. You're becoming someone",
-      'Learn about the person you\'re helping',
-    ];
-    if (TEMPLATE_MARKERS.some((m) => content.includes(m))) return '';
-    return content;
-  };
-
-  useEffect(() => {
-    if (activeTab !== 'coworkAgent') return;
-    if (!bootstrapLoaded) {
-      void (async () => {
-        const [identity, user, soul] = await Promise.all([
-          coworkService.readBootstrapFile('IDENTITY.md'),
-          coworkService.readBootstrapFile('USER.md'),
-          coworkService.readBootstrapFile('SOUL.md'),
-        ]);
-        setBootstrapIdentity(stripDefaultTemplate(identity));
-        setBootstrapUser(stripDefaultTemplate(user));
-        setBootstrapSoul(stripDefaultTemplate(soul));
-        setBootstrapLoaded(true);
-      })();
-    }
-  }, [activeTab, bootstrapLoaded]);
 
   const resetCoworkMemoryEditor = () => {
     setCoworkMemoryEditingId(null);
@@ -1518,7 +1671,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     const hasValidAuth = hasProviderAuthConfigured(provider, providerConfig);
 
     // GitHub Copilot requires device code auth — redirect to sign-in flow
-    if (provider === 'github-copilot' && isEnabling && !providerConfig.apiKey.trim()) {
+    if (provider === ProviderName.Copilot && isEnabling && !hasValidAuth) {
       handleCopilotSignIn();
       return;
     }
@@ -1578,13 +1731,19 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         setCopilotGithubUser(result.githubUser || '');
         setCopilotAuthStatus('authenticated');
 
-        // Store the Copilot API token in the provider's apiKey field
-        handleProviderConfigChange('github-copilot', 'apiKey', result.token);
-        if (result.baseUrl) {
-          handleProviderConfigChange('github-copilot', 'baseUrl', result.baseUrl);
-        }
-        // Auto-enable the provider
-        enableProvider('github-copilot');
+        apiService.setProviderRuntimeCredential(ProviderName.Copilot, {
+          apiKey: result.token,
+          ...(result.baseUrl ? { baseUrl: result.baseUrl } : {}),
+        });
+        setProviders(prev => ({
+          ...prev,
+          [ProviderName.Copilot]: {
+            ...prev[ProviderName.Copilot],
+            enabled: true,
+            authType: ProviderAuthType.OAuth,
+            apiKey: '',
+          },
+        }));
       } else {
         setCopilotError(result.error || 'Authentication failed');
         setCopilotAuthStatus('error');
@@ -1602,12 +1761,15 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       setCopilotGithubUser('');
       setCopilotUserCode('');
       setCopilotError(null);
-      // Clear the token from provider config
-      handleProviderConfigChange('github-copilot', 'apiKey', '');
-      // Disable the provider
+      apiService.setProviderRuntimeCredential(ProviderName.Copilot, null);
       setProviders(prev => ({
         ...prev,
-        'github-copilot': { ...prev['github-copilot'], enabled: false },
+        [ProviderName.Copilot]: {
+          ...prev[ProviderName.Copilot],
+          enabled: false,
+          authType: ProviderAuthType.ApiKey,
+          apiKey: '',
+        },
       }));
     } catch (error) {
       console.error('[Settings] GitHub Copilot sign-out failed:', error);
@@ -1641,6 +1803,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
               ...providerConfig,
               enabled: providerConfig.enabled && hasValidAuth,
               apiFormat,
+              ...(providerKey === ProviderName.Copilot ? { apiKey: '' } : {}),
               baseUrl: resolveBaseUrl(providerKey as ProviderType, providerConfig.baseUrl, apiFormat),
             },
           ];
@@ -1655,6 +1818,20 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       const primaryProvider = firstEnabledProvider
         ? firstEnabledProvider[1]
         : normalizedProviders[activeProvider];
+      const normalizedBrowserWebAccess = normalizeBrowserWebAccessConfig({
+        ...browserWebAccess,
+        browserEnabled: true,
+        profileMode: defaultBrowserWebAccessConfig.profileMode,
+        followGlobalProxy: defaultBrowserWebAccessConfig.followGlobalProxy,
+        snapshotMode: defaultBrowserWebAccessConfig.snapshotMode,
+        executablePath: undefined,
+        cdpUrl: undefined,
+        attachOnly: undefined,
+        remoteCdpTimeoutMs: undefined,
+        remoteCdpHandshakeTimeoutMs: undefined,
+        extraArgs: [],
+        webFetch: defaultBrowserWebAccessConfig.webFetch,
+      });
 
       await configService.updateConfig({
         api: {
@@ -1665,6 +1842,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         theme,
         language,
         useSystemProxy,
+        sqliteAutoBackupEnabled,
+        browserWebAccess: normalizedBrowserWebAccess,
         shortcuts,
         app: {
           ...configService.getConfig().app,
@@ -1682,22 +1861,25 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       let apiKeyToUse = primaryProvider.apiKey;
       let baseUrlToUse = primaryProvider.baseUrl;
 
+
       apiService.setConfig({
         apiKey: apiKeyToUse,
         baseUrl: baseUrlToUse,
       });
 
       // 更新 Redux store 中的可用模型列表
-      const allModels: { id: string; name: string; provider?: string; providerKey?: string; supportsImage?: boolean }[] = [];
+      const allModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean }[] = [];
       Object.entries(normalizedProviders).forEach(([providerName, config]) => {
         if (config.enabled && config.models) {
+          const openClawProviderId = getOpenClawProviderIdForConfig(providerName, config);
           config.models.forEach(model => {
             allModels.push({
               id: model.id,
               name: model.name,
               provider: getProviderDisplayName(providerName, config),
               providerKey: providerName,
-              supportsImage: model.supportsImage ?? false,
+              openClawProviderId,
+              supportsImage: resolveModelSupportsImageForProvider(providerName, model),
             });
           });
         }
@@ -1710,6 +1892,17 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
           memoryEnabled: coworkMemoryEnabled,
           memoryLlmJudgeEnabled: coworkMemoryLlmJudgeEnabled,
           skipMissedJobs,
+          embeddingEnabled,
+          embeddingProvider,
+          embeddingModel,
+          embeddingLocalModelPath,
+          embeddingVectorWeight,
+          embeddingRemoteBaseUrl,
+          embeddingRemoteApiKey,
+          dreamingEnabled,
+          dreamingFrequency,
+          dreamingModel,
+          dreamingTimezone,
         });
         if (!updated) {
           throw new Error(i18nService.t('coworkConfigSaveFailed'));
@@ -1722,22 +1915,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         }
       }
 
-      // Save bootstrap files (IDENTITY.md, USER.md, SOUL.md) only if loaded
-      if (bootstrapLoaded) {
-        const results = await Promise.all([
-          coworkService.writeBootstrapFile('IDENTITY.md', bootstrapIdentity),
-          coworkService.writeBootstrapFile('USER.md', bootstrapUser),
-          coworkService.writeBootstrapFile('SOUL.md', bootstrapSoul),
-        ]);
-        if (results.some(r => !r)) {
-          throw new Error(i18nService.t('coworkBootstrapSaveFailed'));
-        }
+      // Ask main to sync IM/OpenClaw config. The main process skips this when
+      // the IM fingerprint has not changed, so unrelated settings saves do not
+      // restart the gateway.
+      const syncSucceeded = await imService.saveAndSyncConfig();
+      if (!syncSucceeded) {
+        throw new Error(i18nService.t('settingsSavedButOpenClawSyncFailed'));
       }
-
-      // Sync IM gateway config (regenerate openclaw.json and restart gateway if running).
-      // This is done on every save regardless of activeTab, because the user may have
-      // edited IM config then switched tabs before clicking Save.
-      await imService.saveAndSyncConfig();
 
       didSaveRef.current = true;
       onClose();
@@ -1802,16 +1986,24 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setNewModelName('');
     setNewModelId('');
     setNewModelSupportsImage(false);
+    setNewModelContextWindow(undefined);
+    setNewModelCustomParams('');
     setModelFormError(null);
   };
 
-  const handleEditModel = (modelId: string, modelName: string, supportsImage?: boolean) => {
+  const handleEditModel = (modelId: string, modelName: string, supportsImage?: boolean, contextWindow?: number, customParams?: Record<string, unknown>) => {
     setIsAddingModel(false);
     setIsEditingModel(true);
     setEditingModelId(modelId);
     setNewModelName(modelName);
     setNewModelId(modelId);
     setNewModelSupportsImage(!!supportsImage);
+    setNewModelContextWindow(contextWindow);
+    setNewModelCustomParams(
+      customParams && Object.keys(customParams).length > 0
+        ? JSON.stringify(customParams, null, 2)
+        : '',
+    );
     setModelFormError(null);
   };
 
@@ -1834,10 +2026,10 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const handleSaveNewModel = () => {
     const modelId = newModelId.trim();
 
-    if (activeProvider === 'ollama') {
-      // For Ollama, only the model name (stored as modelId) is required
+    if (activeProvider === 'ollama' || activeProvider === 'lm-studio') {
+      // For Ollama/LM Studio, only the model name (stored as modelId) is required
       if (!modelId) {
-        setModelFormError(i18nService.t('ollamaModelNameRequired'));
+        setModelFormError(i18nService.t(activeProvider === 'lm-studio' ? 'lmStudioModelNameRequired' : 'ollamaModelNameRequired'));
         return;
       }
     } else {
@@ -1849,7 +2041,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     }
 
     // For Ollama, auto-fill display name from modelId if not provided
-    const modelName = activeProvider === 'ollama'
+    const modelName = activeProvider === 'ollama' || activeProvider === 'lm-studio'
       ? (newModelName.trim() && newModelName.trim() !== modelId ? newModelName.trim() : modelId)
       : newModelName.trim();
 
@@ -1862,10 +2054,34 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       return;
     }
 
+    // Parse custom params JSON (validate before saving)
+    let parsedCustomParams: Record<string, unknown> | undefined;
+    const trimmedParams = newModelCustomParams.trim();
+    if (trimmedParams) {
+      try {
+        parsedCustomParams = JSON.parse(trimmedParams);
+        if (typeof parsedCustomParams !== 'object' || parsedCustomParams === null || Array.isArray(parsedCustomParams)) {
+          setModelFormError(i18nService.t('customParamsInvalidJson'));
+          return;
+        }
+      } catch {
+        setModelFormError(i18nService.t('customParamsInvalidJson'));
+        return;
+      }
+    }
+
     const nextModel = {
       id: modelId,
       name: modelName,
-      supportsImage: newModelSupportsImage,
+      supportsImage: ProviderRegistry.resolveModelSupportsImage(
+        activeProvider,
+        modelId,
+        newModelSupportsImage,
+      ),
+      ...(newModelContextWindow !== undefined ? { contextWindow: newModelContextWindow } : {}),
+      ...(parsedCustomParams && Object.keys(parsedCustomParams).length > 0
+        ? { customParams: parsedCustomParams }
+        : {}),
     };
     const updatedModels = isEditingModel && editingModelId
       ? currentModels.map(model => (model.id === editingModelId ? nextModel : model))
@@ -1885,6 +2101,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setNewModelName('');
     setNewModelId('');
     setNewModelSupportsImage(false);
+    setNewModelCustomParams('');
     setModelFormError(null);
   };
 
@@ -1895,6 +2112,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setNewModelName('');
     setNewModelId('');
     setNewModelSupportsImage(false);
+    setNewModelContextWindow(undefined);
+    setNewModelCustomParams('');
     setModelFormError(null);
   };
 
@@ -1931,6 +2150,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
 
     const hasValidAuth = providerConfig.apiKey;
 
+
     if (providerRequiresApiKey(testingProvider) && !hasValidAuth) {
       showTestResultModal({ success: false, message: i18nService.t('apiKeyRequired') }, testingProvider);
       setIsTesting(false);
@@ -1964,6 +2184,26 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
 
       // Determine effective API key
       let effectiveApiKey = providerConfig.apiKey;
+
+      if (testingProvider === ProviderName.Copilot) {
+        const result = await window.electron.githubCopilot.refreshToken();
+        if (!result.success || !result.token) {
+          showTestResultModal({
+            success: false,
+            message: result.error || i18nService.t('apiKeyRequired'),
+          }, testingProvider);
+          return;
+        }
+        effectiveApiKey = result.token;
+        if (result.baseUrl) {
+          effectiveBaseUrl = result.baseUrl;
+          normalizedBaseUrl = effectiveBaseUrl.replace(/\/+$/, '');
+        }
+        apiService.setProviderRuntimeCredential(ProviderName.Copilot, {
+          apiKey: result.token,
+          ...(result.baseUrl ? { baseUrl: result.baseUrl } : {}),
+        });
+      }
 
       if (testingProvider === 'qwen') {
         // Use regular API Key mode
@@ -2013,12 +2253,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         if (effectiveApiKey) {
           headers.Authorization = `Bearer ${effectiveApiKey}`;
         }
-        if (testingProvider === 'github-copilot') {
-                  headers['Copilot-Integration-Id'] = 'vscode-chat';
-                  headers['Editor-Version'] = 'vscode/1.96.2';
-                  headers['Editor-Plugin-Version'] = 'copilot-chat/0.26.7';
-                  headers['User-Agent'] = 'GitHubCopilotChat/0.26.7';
-                  headers['Openai-Intent'] = 'conversation-panel';
+        if (testingProvider === ProviderName.Copilot) {
+          headers['Copilot-Integration-Id'] = 'vscode-chat';
+          headers['Editor-Version'] = 'vscode/1.96.2';
+          headers['Editor-Plugin-Version'] = 'copilot-chat/0.26.7';
+          headers['User-Agent'] = 'GitHubCopilotChat/0.26.7';
+          headers['Openai-Intent'] = 'conversation-panel';
         }
         const openAIRequestBody: Record<string, unknown> = useResponsesApi
           ? {
@@ -2082,7 +2322,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
             baseUrl: resolveBaseUrl(providerKey as ProviderType, providerConfig.baseUrl, apiFormat),
             apiFormat,
             codingPlanEnabled: (providerConfig as ProviderConfig).codingPlanEnabled,
-            models: providerConfig.models,
+            models: normalizeModels(providerKey, providerConfig.models),
           },
         ] as const;
       })
@@ -2101,10 +2341,10 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     };
   };
 
-  const normalizeModels = (models?: Model[]) =>
+  const normalizeModels = (providerKey: string, models?: Model[]) =>
     models?.map(model => ({
       ...model,
-      supportsImage: model.supportsImage ?? false,
+      supportsImage: resolveModelSupportsImageForProvider(providerKey, model),
     }));
 
   const DEFAULT_EXPORT_PASSWORD = EXPORT_PASSWORD;
@@ -2149,34 +2389,40 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
 
     try {
       const raw = await file.text();
+      console.log(`[Settings] importing providers from file: ${file.name}, size: ${file.size}`);
       let payload: ProvidersImportPayload;
       try {
         payload = JSON.parse(raw) as ProvidersImportPayload;
       } catch {
+        console.warn('[Settings] import failed: invalid JSON in file');
         setError(i18nService.t('invalidProvidersFile'));
         return;
       }
 
       if (!payload || payload.type !== EXPORT_FORMAT_TYPE || !payload.providers) {
+        console.warn(`[Settings] import failed: invalid format, type=${payload?.type}, hasProviders=${!!payload?.providers}`);
         setError(i18nService.t('invalidProvidersFile'));
         return;
       }
 
       // Check if it's version 2 (password-based encryption)
       if (payload.version === 2 && payload.encryption?.keySource === 'password') {
+        console.log('[Settings] import: detected v2 password-based encryption');
         await processImportPayloadWithPassword(payload);
         return;
       }
 
       // Version 1 (legacy local-store key) - try to decrypt with local key
       if (payload.version === 1) {
+        console.log('[Settings] import: detected v1 local-key encryption');
         await processImportPayloadWithLocalKey(payload);
         return;
       }
 
+      console.warn(`[Settings] import failed: unsupported version=${payload.version}`);
       setError(i18nService.t('invalidProvidersFile'));
     } catch (err) {
-      console.error('Failed to import providers:', err);
+      console.error('[Settings] import failed:', err);
       setError(i18nService.t('importProvidersFailed'));
     }
   };
@@ -2184,6 +2430,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const processImportPayloadWithLocalKey = async (payload: ProvidersImportPayload) => {
     setIsImportingProviders(true);
     try {
+      const fileKeys = Object.keys(payload.providers ?? {});
+      console.log(`[Settings] v1 import: processing ${fileKeys.length} providers from file`);
       const providerUpdates: Partial<ProvidersConfig> = {};
       let hadDecryptFailure = false;
       for (const providerKey of providerKeys) {
@@ -2198,32 +2446,36 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         } else if (providerData.apiKey && typeof providerData.apiKey === 'object') {
           try {
             apiKey = await decryptSecret(providerData.apiKey as EncryptedPayload);
+            console.log(`[Settings] v1 import: decrypted key for ${providerKey}`);
           } catch (error) {
             hadDecryptFailure = true;
-            console.warn(`Failed to decrypt provider key for ${providerKey}`, error);
+            console.warn(`[Settings] v1 import: failed to decrypt key for ${providerKey}`, error);
           }
         } else if (typeof providerData.apiKeyEncrypted === 'string' && typeof providerData.apiKeyIv === 'string') {
           try {
             apiKey = await decryptSecret({ encrypted: providerData.apiKeyEncrypted, iv: providerData.apiKeyIv });
+            console.log(`[Settings] v1 import: decrypted key for ${providerKey}`);
           } catch (error) {
             hadDecryptFailure = true;
-            console.warn(`Failed to decrypt provider key for ${providerKey}`, error);
+            console.warn(`[Settings] v1 import: failed to decrypt key for ${providerKey}`, error);
           }
         }
 
-        const models = normalizeModels(providerData.models);
+        const models = normalizeModels(providerKey, providerData.models);
+        const existing = providers[providerKey];
 
         providerUpdates[providerKey] = {
-          enabled: typeof providerData.enabled === 'boolean' ? providerData.enabled : providers[providerKey].enabled,
-          apiKey: apiKey ?? providers[providerKey].apiKey,
-          baseUrl: typeof providerData.baseUrl === 'string' ? providerData.baseUrl : providers[providerKey].baseUrl,
-          apiFormat: getEffectiveApiFormat(providerKey, providerData.apiFormat ?? providers[providerKey].apiFormat),
-          codingPlanEnabled: typeof providerData.codingPlanEnabled === 'boolean' ? providerData.codingPlanEnabled : (providers[providerKey] as ProviderConfig).codingPlanEnabled,
-          models: models ?? providers[providerKey].models,
+          enabled: typeof providerData.enabled === 'boolean' ? providerData.enabled : existing?.enabled ?? false,
+          apiKey: apiKey ?? existing?.apiKey ?? '',
+          baseUrl: typeof providerData.baseUrl === 'string' ? providerData.baseUrl : existing?.baseUrl ?? '',
+          apiFormat: getEffectiveApiFormat(providerKey, providerData.apiFormat ?? existing?.apiFormat),
+          codingPlanEnabled: typeof providerData.codingPlanEnabled === 'boolean' ? providerData.codingPlanEnabled : (existing as ProviderConfig)?.codingPlanEnabled,
+          models: models ?? existing?.models,
         };
       }
 
       if (Object.keys(providerUpdates).length === 0) {
+        console.warn(`[Settings] v1 import failed: no matching providers found, file keys: ${fileKeys.join(', ')}`);
         setError(i18nService.t('invalidProvidersFile'));
         return;
       }
@@ -2240,11 +2492,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       });
       setIsTestResultModalOpen(false);
       setTestResult(null);
+      console.log(`[Settings] v1 import complete: updated ${Object.keys(providerUpdates).length} providers`);
       if (hadDecryptFailure) {
         setNoticeMessage(i18nService.t('decryptProvidersPartial'));
       }
     } catch (err) {
-      console.error('Failed to import providers:', err);
+      console.error('[Settings] v1 import failed:', err);
       const isDecryptError = err instanceof Error
         && (err.message === 'Invalid encrypted payload' || err.name === 'OperationError');
       const message = isDecryptError
@@ -2264,6 +2517,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setIsImportingProviders(true);
 
     try {
+      const fileKeys = Object.keys(payload.providers);
+      console.log(`[Settings] v2 import: processing ${fileKeys.length} providers from file`);
       const providerUpdates: Partial<ProvidersConfig> = {};
       let hadDecryptFailure = false;
 
@@ -2282,26 +2537,29 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
             // Version 2 password-based encryption
             try {
               apiKey = await decryptWithPassword(apiKeyObj, DEFAULT_EXPORT_PASSWORD);
+              console.log(`[Settings] v2 import: decrypted key for ${providerKey}`);
             } catch (error) {
               hadDecryptFailure = true;
-              console.warn(`Failed to decrypt provider key for ${providerKey}`, error);
+              console.warn(`[Settings] v2 import: failed to decrypt key for ${providerKey}`, error);
             }
           }
         }
 
-        const models = normalizeModels(providerData.models);
+        const models = normalizeModels(providerKey, providerData.models);
+        const existing = providers[providerKey];
 
         providerUpdates[providerKey] = {
-          enabled: typeof providerData.enabled === 'boolean' ? providerData.enabled : providers[providerKey].enabled,
-          apiKey: apiKey ?? providers[providerKey].apiKey,
-          baseUrl: typeof providerData.baseUrl === 'string' ? providerData.baseUrl : providers[providerKey].baseUrl,
-          apiFormat: getEffectiveApiFormat(providerKey, providerData.apiFormat ?? providers[providerKey].apiFormat),
-          codingPlanEnabled: typeof providerData.codingPlanEnabled === 'boolean' ? providerData.codingPlanEnabled : (providers[providerKey] as ProviderConfig).codingPlanEnabled,
-          models: models ?? providers[providerKey].models,
+          enabled: typeof providerData.enabled === 'boolean' ? providerData.enabled : existing?.enabled ?? false,
+          apiKey: apiKey ?? existing?.apiKey ?? '',
+          baseUrl: typeof providerData.baseUrl === 'string' ? providerData.baseUrl : existing?.baseUrl ?? '',
+          apiFormat: getEffectiveApiFormat(providerKey, providerData.apiFormat ?? existing?.apiFormat),
+          codingPlanEnabled: typeof providerData.codingPlanEnabled === 'boolean' ? providerData.codingPlanEnabled : (existing as ProviderConfig)?.codingPlanEnabled,
+          models: models ?? existing?.models,
         };
       }
 
       if (Object.keys(providerUpdates).length === 0) {
+        console.warn(`[Settings] v2 import failed: no matching providers found, file keys: ${fileKeys.join(', ')}`);
         setError(i18nService.t('invalidProvidersFile'));
         return;
       }
@@ -2313,6 +2571,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
 
       if (!anyKeyDecrypted && hadDecryptFailure) {
         // All decryptions failed - likely wrong password
+        console.warn('[Settings] v2 import failed: all key decryptions failed, likely wrong password');
         setError(i18nService.t('decryptProvidersFailed'));
         return;
       }
@@ -2329,11 +2588,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       });
       setIsTestResultModalOpen(false);
       setTestResult(null);
+      console.log(`[Settings] v2 import complete: updated ${Object.keys(providerUpdates).length} providers`);
       if (hadDecryptFailure) {
         setNoticeMessage(i18nService.t('decryptProvidersPartial'));
       }
     } catch (err) {
-      console.error('Failed to import providers:', err);
+      console.error('[Settings] v2 import failed:', err);
       const isDecryptError = err instanceof Error
         && (err.message === 'Invalid encrypted payload' || err.name === 'OperationError');
       const message = isDecryptError
@@ -2348,13 +2608,16 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   // 渲染标签页
   const sidebarTabs: { key: TabType; label: string; icon: React.ReactNode }[] = (() => {
     const allTabs = [
-      { key: 'general' as TabType,        label: i18nService.t('general'),        icon: <Cog6ToothIcon className="h-5 w-5" /> },
+      { key: 'general' as TabType,        label: i18nService.t('general'),        icon: <SettingsSlidersIcon className="h-5 w-5" /> },
+      { key: 'appearance' as TabType,     label: i18nService.t('appearance'),     icon: <SunIcon className="h-5 w-5" /> },
       { key: 'coworkAgentEngine' as TabType, label: i18nService.t('coworkAgentEngine'), icon: <CpuChipIcon className="h-5 w-5" /> },
-      { key: 'model' as TabType,          label: i18nService.t('model'),          icon: <CubeIcon className="h-5 w-5" /> },
+      { key: 'model' as TabType,          label: i18nService.t('settingsCustomModel'), icon: <CubeIcon className="h-5 w-5" /> },
       { key: 'im' as TabType,             label: i18nService.t('imBot'),          icon: <ChatBubbleLeftIcon className="h-5 w-5" /> },
+      { key: 'browserWebAccess' as TabType, label: i18nService.t('browserWebAccessTab'), icon: <GlobeAltIcon className="h-5 w-5" /> },
       { key: 'email' as TabType,          label: i18nService.t('emailTab'),       icon: <EnvelopeIcon className="h-5 w-5" /> },
       { key: 'coworkMemory' as TabType,   label: i18nService.t('coworkMemoryTitle'), icon: <BrainIcon className="h-5 w-5" /> },
-      { key: 'coworkAgent' as TabType,    label: i18nService.t('coworkAgentTab'),    icon: <UserCircleIcon className="h-5 w-5" /> },
+      { key: 'coworkDreaming' as TabType, label: i18nService.t('coworkMemoryTabDreaming'), icon: <DreamingTabIcon className="h-5 w-5" /> },
+      { key: 'plugins' as TabType,        label: i18nService.t('pluginsTab'),     icon: <PlugIcon className="h-5 w-5" /> },
       { key: 'shortcuts' as TabType,      label: i18nService.t('shortcuts'),      icon: <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5"><rect x="2" y="4" width="20" height="14" rx="2" /><line x1="6" y1="8" x2="8" y2="8" /><line x1="10" y1="8" x2="12" y2="8" /><line x1="14" y1="8" x2="16" y2="8" /><line x1="6" y1="12" x2="8" y2="12" /><line x1="10" y1="12" x2="14" y2="12" /><line x1="16" y1="12" x2="18" y2="12" /><line x1="8" y1="15.5" x2="16" y2="15.5" /></svg> },
       { key: 'about' as TabType,          label: i18nService.t('about'),          icon: <InformationCircleIcon className="h-5 w-5" /> },
     ];
@@ -2371,6 +2634,173 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const activeTabLabel = useMemo(() => {
     return sidebarTabs.find(t => t.key === activeTab)?.label ?? '';
   }, [activeTab, sidebarTabs]);
+
+  const renderAppearanceSettings = () => (
+    <div className="space-y-8">
+      <div>
+        <h4 className="text-sm font-medium mb-3" style={{ color: 'var(--lobster-text-primary)' }}>
+          {i18nService.t('appearance')}
+        </h4>
+
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          {(['light', 'dark', 'system'] as const).map((mode) => {
+            const isSelected = theme === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => {
+                  setTheme(mode);
+                  themeService.setTheme(mode);
+                  setThemeId(themeService.getThemeId());
+                }}
+                className="flex flex-col items-center rounded-xl border-2 p-3 transition-colors cursor-pointer"
+                style={{
+                  borderColor: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-border)',
+                  backgroundColor: isSelected ? 'var(--lobster-primary-muted)' : undefined,
+                }}
+              >
+                <svg viewBox="0 0 120 80" className="w-full h-auto rounded-md mb-2 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
+                  {mode === 'light' && (
+                    <>
+                      <rect width="120" height="80" fill="#F8F9FB" />
+                      <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
+                      <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
+                      <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
+                      <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
+                      <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
+                      <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
+                      <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
+                      <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
+                      <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
+                      <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
+                      <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
+                      <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
+                      <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#E2E4E7" />
+                    </>
+                  )}
+                  {mode === 'dark' && (
+                    <>
+                      <rect width="120" height="80" fill="#0F1117" />
+                      <rect x="0" y="0" width="30" height="80" fill="#151820" />
+                      <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
+                      <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
+                      <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
+                      <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
+                      <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
+                      <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
+                      <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
+                      <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
+                      <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
+                      <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
+                      <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
+                      <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#252930" />
+                    </>
+                  )}
+                  {mode === 'system' && (
+                    <>
+                      <defs>
+                        <clipPath id="left-half">
+                          <rect x="0" y="0" width="60" height="80" />
+                        </clipPath>
+                        <clipPath id="right-half">
+                          <rect x="60" y="0" width="60" height="80" />
+                        </clipPath>
+                      </defs>
+                      <g clipPath="url(#left-half)">
+                        <rect width="120" height="80" fill="#F8F9FB" />
+                        <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
+                        <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
+                        <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
+                        <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
+                        <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
+                        <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
+                        <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
+                        <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
+                        <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
+                        <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
+                        <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
+                        <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
+                      </g>
+                      <g clipPath="url(#right-half)">
+                        <rect width="120" height="80" fill="#0F1117" />
+                        <rect x="0" y="0" width="30" height="80" fill="#151820" />
+                        <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
+                        <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
+                        <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
+                        <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
+                        <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
+                        <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
+                        <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
+                        <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
+                        <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
+                        <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
+                        <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
+                      </g>
+                      <line x1="60" y1="0" x2="60" y2="80" stroke="#888" strokeWidth="0.5" />
+                    </>
+                  )}
+                </svg>
+                <span className="text-xs font-medium" style={{ color: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-text-primary)' }}>
+                  {i18nService.t(mode)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <h4 className="text-sm font-medium mb-3 mt-5" style={{ color: 'var(--lobster-text-primary)' }}>
+          {i18nService.t('themeColor')}
+        </h4>
+        {(() => {
+          const allThemes = themeService.getAllThemes();
+          const classicThemes = allThemes.filter(t => t.meta.id === 'classic-light' || t.meta.id === 'classic-dark');
+          const otherThemes = allThemes.filter(t => t.meta.id !== 'classic-light' && t.meta.id !== 'classic-dark');
+          const renderTile = (t: import('../theme').ThemeDefinition) => {
+            const isSelected = themeId === t.meta.id;
+            const [bg, c1, c2, c3] = t.meta.preview;
+            return (
+              <button
+                key={t.meta.id}
+                type="button"
+                onClick={() => {
+                  themeService.setThemeById(t.meta.id);
+                  setThemeId(t.meta.id);
+                  setTheme(t.meta.appearance as 'light' | 'dark');
+                }}
+                className="flex flex-col items-center rounded-xl border-2 p-2 transition-colors cursor-pointer"
+                style={{
+                  borderColor: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-border)',
+                  backgroundColor: isSelected ? 'var(--lobster-primary-muted)' : undefined,
+                }}
+              >
+                <svg viewBox="0 0 80 48" className="w-full h-auto rounded-md mb-1.5 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
+                  <rect width="80" height="48" fill={bg} />
+                  <rect x="4" y="6" width="20" height="36" rx="3" fill={c1} opacity="0.7" />
+                  <rect x="28" y="6" width="48" height="36" rx="3" fill={c2} opacity="0.5" />
+                  <circle cx="52" cy="24" r="8" fill={c3} opacity="0.8" />
+                  <rect x="32" y="34" width="40" height="4" rx="2" fill={c1} opacity="0.6" />
+                </svg>
+                <span className="text-[10px] font-medium truncate w-full text-center" style={{ color: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-text-primary)' }}>
+                  {i18nService.t('theme-name-' + t.meta.id) || t.meta.name}
+                </span>
+              </button>
+            );
+          };
+          return (
+            <>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                {classicThemes.map(renderTile)}
+              </div>
+              <div className="grid grid-cols-4 gap-3">
+                {otherThemes.map(renderTile)}
+              </div>
+            </>
+          );
+        })()}
+      </div>
+    </div>
+  );
 
   const renderTabContent = () => {
     switch(activeTab) {
@@ -2399,333 +2829,88 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
               </div>
             </div>
 
-            {/* Auto-launch Section */}
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-3">
-                {i18nService.t('autoLaunch')}
-              </h4>
-              <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-sm text-secondary">
-                  {i18nService.t('autoLaunchDescription')}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={autoLaunch}
-                  onClick={async () => {
-                    if (isUpdatingAutoLaunch) return;
-                    const next = !autoLaunch;
-                    setIsUpdatingAutoLaunch(true);
-                    try {
-                      const result = await window.electron.autoLaunch.set(next);
-                      if (result.success) {
-                        setAutoLaunchState(next);
-                      } else {
-                        setError(result.error || 'Failed to update auto-launch setting');
-                      }
-                    } catch (err) {
-                      console.error('Failed to set auto-launch:', err);
-                      setError('Failed to update auto-launch setting');
-                    } finally {
-                      setIsUpdatingAutoLaunch(false);
-                    }
-                  }}
-                  disabled={isUpdatingAutoLaunch}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                    isUpdatingAutoLaunch ? 'opacity-50 cursor-not-allowed' : ''
-                  } ${
-                    autoLaunch
-                      ? 'bg-primary'
-                      : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      autoLaunch ? 'translate-x-6' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
-              </label>
-            </div>
+            <SettingsToggleRow
+              title={i18nService.t('autoLaunch')}
+              description={i18nService.t('autoLaunchDescription')}
+              checked={autoLaunch}
+              disabled={isUpdatingAutoLaunch}
+              onToggle={async () => {
+                if (isUpdatingAutoLaunch) return;
+                const next = !autoLaunch;
+                setIsUpdatingAutoLaunch(true);
+                try {
+                  const result = await window.electron.autoLaunch.set(next);
+                  if (result.success) {
+                    setAutoLaunchState(next);
+                  } else {
+                    setError(result.error || 'Failed to update auto-launch setting');
+                  }
+                } catch (err) {
+                  console.error('Failed to set auto-launch:', err);
+                  setError('Failed to update auto-launch setting');
+                } finally {
+                  setIsUpdatingAutoLaunch(false);
+                }
+              }}
+            />
 
-            {/* Prevent Sleep Section */}
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-3">
-                {i18nService.t('preventSleep')}
-              </h4>
-              <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-sm text-secondary">
-                  {i18nService.t('preventSleepDescription')}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={preventSleep}
-                  onClick={async () => {
-                    if (isUpdatingPreventSleep) return;
-                    const next = !preventSleep;
-                    setIsUpdatingPreventSleep(true);
-                    try {
-                      const result = await window.electron.preventSleep.set(next);
-                      if (result.success) {
-                        setPreventSleepState(next);
-                      } else {
-                        setError(result.error || 'Failed to update prevent-sleep setting');
-                      }
-                    } catch (err) {
-                      console.error('Failed to set prevent-sleep:', err);
-                      setError('Failed to update prevent-sleep setting');
-                    } finally {
-                      setIsUpdatingPreventSleep(false);
-                    }
-                  }}
-                  disabled={isUpdatingPreventSleep}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                    isUpdatingPreventSleep ? 'opacity-50 cursor-not-allowed' : ''
-                  } ${
-                    preventSleep
-                      ? 'bg-primary'
-                      : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      preventSleep ? 'translate-x-6' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
-              </label>
-            </div>
+            <SettingsToggleRow
+              title={i18nService.t('preventSleep')}
+              description={i18nService.t('preventSleepDescription')}
+              checked={preventSleep}
+              disabled={isUpdatingPreventSleep}
+              onToggle={async () => {
+                if (isUpdatingPreventSleep) return;
+                const next = !preventSleep;
+                setIsUpdatingPreventSleep(true);
+                try {
+                  const result = await window.electron.preventSleep.set(next);
+                  if (result.success) {
+                    setPreventSleepState(next);
+                  } else {
+                    setError(result.error || 'Failed to update prevent-sleep setting');
+                  }
+                } catch (err) {
+                  console.error('Failed to set prevent-sleep:', err);
+                  setError('Failed to update prevent-sleep setting');
+                } finally {
+                  setIsUpdatingPreventSleep(false);
+                }
+              }}
+            />
 
-            {/* System proxy Section */}
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-3">
-                {i18nService.t('useSystemProxy')}
-              </h4>
-              <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-sm text-secondary">
-                  {i18nService.t('useSystemProxyDescription')}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={useSystemProxy}
-                  onClick={() => {
-                    setUseSystemProxy((prev) => !prev);
-                  }}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                    useSystemProxy
-                      ? 'bg-primary'
-                      : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      useSystemProxy ? 'translate-x-6' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
-              </label>
-            </div>
+            <SettingsToggleRow
+              title={i18nService.t('useSystemProxy')}
+              description={i18nService.t('useSystemProxyDescription')}
+              checked={useSystemProxy}
+              onToggle={() => {
+                setUseSystemProxy((prev) => !prev);
+              }}
+            />
 
-            {/* Skip Missed Jobs Section */}
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-3">
-                {i18nService.t('skipMissedJobs')}
-              </h4>
-              <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-sm text-secondary">
-                  {i18nService.t('skipMissedJobsDescription')}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={skipMissedJobs}
-                  onClick={() => {
-                    setSkipMissedJobs((prev) => !prev);
-                  }}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                    skipMissedJobs
-                      ? 'bg-primary'
-                      : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      skipMissedJobs ? 'translate-x-6' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
-              </label>
-            </div>
+            <SettingsToggleRow
+              title={i18nService.t('sqliteAutoBackupEnabled')}
+              description={i18nService.t('sqliteAutoBackupEnabledDescription')}
+              checked={sqliteAutoBackupEnabled}
+              onToggle={() => {
+                setSqliteAutoBackupEnabled((prev) => !prev);
+              }}
+            />
 
-            {/* Appearance Section — mode selector + theme gallery */}
-            <div>
-              <h4 className="text-sm font-medium mb-3" style={{ color: 'var(--lobster-text-primary)' }}>
-                {i18nService.t('appearance')}
-              </h4>
+            <SettingsToggleRow
+              title={i18nService.t('skipMissedJobs')}
+              description={i18nService.t('skipMissedJobsDescription')}
+              checked={skipMissedJobs}
+              onToggle={() => {
+                setSkipMissedJobs((prev) => !prev);
+              }}
+            />
 
-              {/* Level 1: Mode selector */}
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                {(['light', 'dark', 'system'] as const).map((mode) => {
-                  const isSelected = theme === mode;
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => {
-                        setTheme(mode);
-                        themeService.setTheme(mode);
-                        setThemeId(themeService.getThemeId());
-                      }}
-                      className="flex flex-col items-center rounded-xl border-2 p-3 transition-colors cursor-pointer"
-                      style={{
-                        borderColor: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-border)',
-                        backgroundColor: isSelected ? 'var(--lobster-primary-muted)' : undefined,
-                      }}
-                    >
-                      <svg viewBox="0 0 120 80" className="w-full h-auto rounded-md mb-2 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
-                        {mode === 'light' && (
-                          <>
-                            <rect width="120" height="80" fill="#F8F9FB" />
-                            <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
-                            <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
-                            <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
-                            <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
-                            <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
-                            <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
-                            <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
-                            <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
-                            <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#E2E4E7" />
-                          </>
-                        )}
-                        {mode === 'dark' && (
-                          <>
-                            <rect width="120" height="80" fill="#0F1117" />
-                            <rect x="0" y="0" width="30" height="80" fill="#151820" />
-                            <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
-                            <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
-                            <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
-                            <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
-                            <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
-                            <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
-                            <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
-                            <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#252930" />
-                          </>
-                        )}
-                        {mode === 'system' && (
-                          <>
-                            <defs>
-                              <clipPath id="left-half">
-                                <rect x="0" y="0" width="60" height="80" />
-                              </clipPath>
-                              <clipPath id="right-half">
-                                <rect x="60" y="0" width="60" height="80" />
-                              </clipPath>
-                            </defs>
-                            <g clipPath="url(#left-half)">
-                              <rect width="120" height="80" fill="#F8F9FB" />
-                              <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
-                              <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
-                              <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
-                              <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
-                              <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
-                              <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
-                              <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
-                              <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                              <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
-                              <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
-                              <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
-                              <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                            </g>
-                            <g clipPath="url(#right-half)">
-                              <rect width="120" height="80" fill="#0F1117" />
-                              <rect x="0" y="0" width="30" height="80" fill="#151820" />
-                              <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
-                              <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
-                              <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
-                              <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
-                              <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
-                              <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
-                              <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
-                              <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
-                              <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
-                              <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
-                              <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
-                            </g>
-                            <line x1="60" y1="0" x2="60" y2="80" stroke="#888" strokeWidth="0.5" />
-                          </>
-                        )}
-                      </svg>
-                      <span className="text-xs font-medium" style={{ color: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-text-primary)' }}>
-                        {i18nService.t(mode)}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Theme color gallery — all themes */}
-              <h4 className="text-sm font-medium mb-3 mt-5" style={{ color: 'var(--lobster-text-primary)' }}>
-                {i18nService.t('themeColor')}
-              </h4>
-              {(() => {
-                const allThemes = themeService.getAllThemes();
-                const classicThemes = allThemes.filter(t => t.meta.id === 'classic-light' || t.meta.id === 'classic-dark');
-                const otherThemes = allThemes.filter(t => t.meta.id !== 'classic-light' && t.meta.id !== 'classic-dark');
-                const renderTile = (t: import('../theme').ThemeDefinition) => {
-                  const isSelected = themeId === t.meta.id;
-                  const [bg, c1, c2, c3] = t.meta.preview;
-                  return (
-                    <button
-                      key={t.meta.id}
-                      type="button"
-                      onClick={() => {
-                        themeService.setThemeById(t.meta.id);
-                        setThemeId(t.meta.id);
-                        setTheme(t.meta.appearance as 'light' | 'dark');
-                      }}
-                      className="flex flex-col items-center rounded-xl border-2 p-2 transition-colors cursor-pointer"
-                      style={{
-                        borderColor: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-border)',
-                        backgroundColor: isSelected ? 'var(--lobster-primary-muted)' : undefined,
-                      }}
-                    >
-                      <svg viewBox="0 0 80 48" className="w-full h-auto rounded-md mb-1.5 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
-                        <rect width="80" height="48" fill={bg} />
-                        <rect x="4" y="6" width="20" height="36" rx="3" fill={c1} opacity="0.7" />
-                        <rect x="28" y="6" width="48" height="36" rx="3" fill={c2} opacity="0.5" />
-                        <circle cx="52" cy="24" r="8" fill={c3} opacity="0.8" />
-                        <rect x="32" y="34" width="40" height="4" rx="2" fill={c1} opacity="0.6" />
-                      </svg>
-                      <span className="text-[10px] font-medium truncate w-full text-center" style={{ color: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-text-primary)' }}>
-                        {t.meta.name}
-                      </span>
-                    </button>
-                  );
-                };
-                return (
-                  <>
-                    <div className="grid grid-cols-2 gap-3 mb-3">
-                      {classicThemes.map(renderTile)}
-                    </div>
-                    <div className="grid grid-cols-4 gap-3">
-                      {otherThemes.map(renderTile)}
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
           </div>
         );
+
+      case 'appearance':
+        return renderAppearanceSettings();
 
       case 'email':
         return <EmailSkillConfig />;
@@ -2782,1122 +2967,214 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
           </div>
         );
 
-      case 'coworkMemory':
+      case 'coworkMemory': {
+        const memoryTabs = [
+          { key: 'entries' as const, titleKey: 'coworkMemoryTabEntries' },
+          { key: 'embedding' as const, titleKey: 'coworkMemoryTabEmbedding' },
+        ];
         return (
-          <div className="space-y-6">
-            {/* Section 1: Long-term Memory (MEMORY.md) */}
-            <div className="space-y-3 rounded-xl border px-4 py-4 border-border">
-              <div className="text-sm font-medium text-foreground">
-                {i18nService.t('coworkMemoryTitle')}
-              </div>
-              {/* Memory toggle hidden – always enabled by default */}
-              <div className="mt-2 text-xs text-secondary">
-                <span className="font-medium">{i18nService.t('coworkMemoryFilePath')}:</span>{' '}
-                <span className="break-all font-mono opacity-80">
-                  {joinWorkspacePath(coworkConfig.workingDirectory, 'MEMORY.md')}
-                </span>
-              </div>
-            </div>
-
-            <div className="space-y-4 rounded-xl border px-4 py-4 border-border">
-              <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <div className="text-sm font-medium text-foreground">
-                    {i18nService.t('coworkMemoryCrudTitle')}
-                  </div>
-                  <div className="text-xs text-secondary">
-                    {i18nService.t('coworkMemoryManageHint')}
-                  </div>
-                </div>
+          <div className="flex flex-col h-full space-y-4">
+            <div
+              className="flex flex-wrap gap-2 border-b border-border pb-3 shrink-0"
+              role="tablist"
+              aria-label={i18nService.t('coworkMemoryTitle')}
+            >
+              {memoryTabs.map((tab) => (
                 <button
                   type="button"
-                  onClick={handleOpenCoworkMemoryModal}
-                  className="inline-flex items-center justify-center px-3 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm transition-colors active:scale-[0.98]"
+                  key={tab.key}
+                  role="tab"
+                  aria-selected={memoryTab === tab.key}
+                  onClick={() => setMemoryTab(tab.key)}
+                  className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                    memoryTab === tab.key
+                      ? 'bg-primary-muted text-primary'
+                      : 'text-secondary hover:text-foreground hover:bg-surface-raised'
+                  }`}
                 >
-                  <PlusCircleIcon className="h-4 w-4 mr-1.5" />
-                  {i18nService.t('coworkMemoryCrudCreate')}
+                  {i18nService.t(tab.titleKey)}
                 </button>
-              </div>
+              ))}
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              {memoryTab === 'entries' && (
+                <div className="space-y-4 rounded-xl border px-4 py-4 border-border">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <div className="text-sm font-medium text-foreground">
+                        {i18nService.t('coworkMemoryCrudTitle')}
+                      </div>
+                      <div className="text-xs text-secondary">
+                        {i18nService.t('coworkMemoryManageHint')}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleOpenCoworkMemoryModal}
+                      className="inline-flex items-center justify-center px-3 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm transition-colors active:scale-[0.98]"
+                    >
+                      <PlusCircleIcon className="h-4 w-4 mr-1.5" />
+                      {i18nService.t('coworkMemoryCrudCreate')}
+                    </button>
+                  </div>
 
-              {coworkMemoryStats && (
-                <div className="text-xs text-secondary">
-                  {`${i18nService.t('coworkMemoryTotalLabel')}: ${coworkMemoryStats.total}`}
+                  {coworkMemoryStats && (
+                    <div className="text-xs text-secondary">
+                      {`${i18nService.t('coworkMemoryTotalLabel')}: ${coworkMemoryStats.total}`}
+                    </div>
+                  )}
+
+                  <input
+                    type="text"
+                    value={coworkMemoryQuery}
+                    onChange={(event) => setCoworkMemoryQuery(event.target.value)}
+                    placeholder={i18nService.t('coworkMemorySearchPlaceholder')}
+                    className="w-full rounded-lg border px-3 py-2 text-sm border-border bg-surface"
+                  />
+
+                  <div className="rounded-lg border border-border">
+                    {coworkMemoryListLoading ? (
+                      <div className="px-3 py-3 text-xs text-secondary">
+                        {i18nService.t('loading')}
+                      </div>
+                    ) : coworkMemoryEntries.length === 0 ? (
+                      <div className="px-3 py-3 text-xs text-secondary">
+                        {i18nService.t('coworkMemoryEmpty')}
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {coworkMemoryEntries.map((entry) => (
+                          <div key={entry.id} className="px-3 py-3 text-xs hover:bg-surface-raised transition-colors">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1 min-w-0">
+                                <div className="font-medium text-foreground break-words">
+                                  {entry.text}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditCoworkMemoryEntry(entry)}
+                                  className="rounded border px-2 py-1 border-border text-foreground hover:bg-surface-raised transition-colors"
+                                >
+                                  {i18nService.t('edit')}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { void handleDeleteCoworkMemoryEntry(entry); }}
+                                  className="rounded border px-2 py-1 text-red-500 border-border hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-60 transition-colors"
+                                  disabled={coworkMemoryListLoading}
+                                >
+                                  {i18nService.t('delete')}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
-              <input
-                type="text"
-                value={coworkMemoryQuery}
-                onChange={(event) => setCoworkMemoryQuery(event.target.value)}
-                placeholder={i18nService.t('coworkMemorySearchPlaceholder')}
-                className="w-full rounded-lg border px-3 py-2 text-sm border-border bg-surface"
-              />
+              {memoryTab === 'embedding' && (
+                <EmbeddingSettingsSection
+                  embeddingEnabled={embeddingEnabled}
+                  embeddingProvider={embeddingProvider}
+                  embeddingModel={embeddingModel}
+                  embeddingVectorWeight={embeddingVectorWeight}
+                  embeddingRemoteBaseUrl={embeddingRemoteBaseUrl}
+                  embeddingRemoteApiKey={embeddingRemoteApiKey}
+                  onEmbeddingEnabledChange={setEmbeddingEnabled}
+                  onEmbeddingProviderChange={setEmbeddingProvider}
+                  onEmbeddingModelChange={setEmbeddingModel}
+                  onEmbeddingVectorWeightChange={setEmbeddingVectorWeight}
+                  onEmbeddingRemoteBaseUrlChange={setEmbeddingRemoteBaseUrl}
+                  onEmbeddingRemoteApiKeyChange={setEmbeddingRemoteApiKey}
+                />
+              )}
 
-              <div className="rounded-lg border border-border">
-                {coworkMemoryListLoading ? (
-                  <div className="px-3 py-3 text-xs text-secondary">
-                    {i18nService.t('loading')}
-                  </div>
-                ) : coworkMemoryEntries.length === 0 ? (
-                  <div className="px-3 py-3 text-xs text-secondary">
-                    {i18nService.t('coworkMemoryEmpty')}
-                  </div>
-                ) : (
-                  <div className="divide-y divide-border">
-                    {coworkMemoryEntries.map((entry) => (
-                      <div key={entry.id} className="px-3 py-3 text-xs hover:bg-surface-raised transition-colors">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex-1 min-w-0">
-                            <div className="font-medium text-foreground break-words">
-                              {entry.text}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1 flex-shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => handleEditCoworkMemoryEntry(entry)}
-                              className="rounded border px-2 py-1 border-border text-foreground hover:bg-surface-raised transition-colors"
-                            >
-                              {i18nService.t('edit')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => { void handleDeleteCoworkMemoryEntry(entry); }}
-                              className="rounded border px-2 py-1 text-red-500 border-border hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-60 transition-colors"
-                              disabled={coworkMemoryListLoading}
-                            >
-                              {i18nService.t('delete')}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
             </div>
-
           </div>
+        );
+      }
+
+      case 'coworkDreaming':
+        return (
+          <div className="min-h-full">
+            <DreamingSettingsSection
+              dreamingEnabled={dreamingEnabled}
+              dreamingFrequency={dreamingFrequency}
+              onDreamingEnabledChange={setDreamingEnabled}
+              onDreamingFrequencyChange={setDreamingFrequency}
+            />
+          </div>
+        );
+
+      case 'browserWebAccess':
+        return (
+          <BrowserWebAccessSettings
+            value={browserWebAccess}
+            onChange={setBrowserWebAccess}
+          />
         );
 
       case 'model':
         return (
-          <div className="flex h-full">
-            {/* Provider List - Left Side */}
-            <div className="w-2/5 border-r border-border pr-3 space-y-1.5 overflow-y-auto">
-              <div className="flex items-center justify-between mb-2 px-1">
-                <h3 className="text-sm font-medium text-foreground">
-                  {i18nService.t('modelProviders')}
-                </h3>
-                <div className="flex items-center space-x-1">
-                  <button
-                    type="button"
-                    onClick={handleImportProvidersClick}
-                    disabled={isImportingProviders || isExportingProviders}
-                    className="inline-flex items-center px-2 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
-                  >
-                    {i18nService.t('import')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleExportProviders}
-                    disabled={isImportingProviders || isExportingProviders}
-                    className="inline-flex items-center px-2 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
-                  >
-                    {i18nService.t('export')}
-                  </button>
-                </div>
-              </div>
-              <input
-                ref={importInputRef}
-                type="file"
-                accept="application/json"
-                className="hidden"
-                onChange={handleImportProviders}
-              />
-              {Object.entries(visibleProviders).map(([provider, config]) => {
-                const providerKey = provider as ProviderType;
-                const isCustom = isCustomProvider(provider);
-                const hasValidAuth = hasProviderAuthConfigured(providerKey, config);
-                const effectiveEnabled = config.enabled && hasValidAuth;
-                const canToggleProvider = effectiveEnabled || hasValidAuth;
-                const displayLabel = isCustom
-                  ? ((config as ProviderConfig).displayName || getCustomProviderDefaultName(provider))
-                  : (ProviderRegistry.get(providerKey)?.label ?? getProviderDisplayName(provider));
-                return (
-                  <div
-                    key={provider}
-                    onClick={() => handleProviderChange(providerKey)}
-                    className={`group flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
-                      activeProvider === provider
-                        ? 'bg-primary-muted border border-primary shadow-subtle'
-                        : 'bg-surface hover:bg-surface-raised border border-transparent'
-                    }`}
-                  >
-                    <div className="flex flex-1 items-center min-w-0">
-                      <div className="mr-2 flex h-7 w-7 items-center justify-center shrink-0">
-                        <span className="text-foreground">
-                          {getProviderIcon(provider)}
-                        </span>
-                      </div>
-                      <div className="flex flex-col min-w-0">
-                        <span className={`text-sm font-medium truncate ${
-                          activeProvider === provider
-                            ? 'text-primary'
-                            : 'text-foreground'
-                        }`}>
-                          {displayLabel}
-                        </span>
-                        {isCustom && (
-                          <span className="text-[9px] leading-tight mt-0.5 text-primary">
-                            {i18nService.t('customBadge')}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center ml-2 gap-1">
-                      {isCustom && (
-                        <button
-                          type="button"
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-claude-secondaryText hover:text-red-500 dark:text-claude-darkSecondaryText dark:hover:text-red-400 p-0.5"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteCustomProvider(providerKey);
-                          }}
-                          title={i18nService.t('deleteCustomProvider')}
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
-                            <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
-                          </svg>
-                        </button>
-                      )}
-                      <div
-                        title={!canToggleProvider ? i18nService.t('configureApiKey') : undefined}
-                        className={`w-7 h-4 rounded-full flex items-center transition-colors ${
-                          effectiveEnabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
-                        } ${
-                          canToggleProvider ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
-                        }`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (!canToggleProvider) {
-                            return;
-                          }
-                          toggleProviderEnabled(providerKey);
-                        }}
-                      >
-                        <div
-                          className={`w-3 h-3 rounded-full bg-white shadow-md transform transition-transform ${
-                            effectiveEnabled ? 'translate-x-3.5' : 'translate-x-0.5'
-                          }`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              {/* Add Custom Provider Button */}
-              {CUSTOM_PROVIDER_KEYS.some(k => !providers[k]) && (
-              <button
-                type="button"
-                onClick={handleAddCustomProvider}
-                className="w-full flex items-center justify-center p-2 rounded-xl border border-dashed border-claude-border dark:border-claude-darkBorder text-claude-secondaryText dark:text-claude-darkSecondaryText hover:border-claude-accent hover:text-claude-accent transition-colors text-sm"
-              >
-                {i18nService.t('addCustomProvider')}
-              </button>
-              )}
-            </div>
-
-            {/* Provider Settings - Right Side */}
-            <div className="w-3/5 pl-4 pr-2 space-y-4 overflow-y-auto [scrollbar-gutter:stable]">
-              <div className="flex items-center justify-between pb-2 border-b border-border">
-                <div className="flex items-center gap-1.5">
-                  <h3 className="text-base font-medium text-foreground">
-                    {isCustomProvider(activeProvider)
-                      ? ((providers[activeProvider] as ProviderConfig)?.displayName || getCustomProviderDefaultName(activeProvider))
-                      : (ProviderRegistry.get(activeProvider)?.label ?? getProviderDisplayName(activeProvider))
-                    } {i18nService.t('providerSettings')}
-                  </h3>
-                  {ProviderRegistry.get(activeProvider)?.website && (
-                    <button
-                      type="button"
-                      onClick={() => void window.electron.shell.openExternal(ProviderRegistry.get(activeProvider)!.website!)}
-                      className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                      title={i18nService.t('visitOfficialSite')}
-                      aria-label={i18nService.t('visitOfficialSite')}
-                    >
-                      <ArrowTopRightOnSquareIcon className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-                <div
-                  className={`px-2 py-0.5 rounded-lg text-xs font-medium ${
-                    providers[activeProvider].enabled && hasProviderAuthConfigured(activeProvider, providers[activeProvider])
-                      ? 'bg-green-500/20 text-green-600 dark:text-green-400'
-                      : 'bg-red-500/20 text-red-600 dark:text-red-400'
-                  }`}
-                >
-                  {providers[activeProvider].enabled && hasProviderAuthConfigured(activeProvider, providers[activeProvider])
-                    ? i18nService.t('providerStatusOn')
-                    : i18nService.t('providerStatusOff')}
-                </div>
-              </div>
-
-              {/* MiniMax OAuth auth section */}
-              {activeProvider === 'minimax' && (
-                <div className="space-y-3">
-                  {/* Auth type radio cards */}
-                  <div>
-                    <p className="text-xs font-medium text-foreground mb-2">
-                      {i18nService.t('minimaxAuthMethodLabel')}
-                    </p>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setProviders(prev => ({
-                            ...prev,
-                            minimax: {
-                              ...prev.minimax,
-                              authType: 'apikey',
-                              enabled: prev.minimax.enabled && prev.minimax.apiKey.trim().length > 0,
-                            },
-                          }));
-                          setMinimaxOAuthPhase({ kind: 'idle' });
-                        }}
-                        className={`flex-1 p-3 rounded-xl border-2 text-left transition-all ${!minimaxIsOAuthMode ? 'border-primary bg-primary/5' : 'border-border opacity-60 hover:opacity-80'}`}
-                      >
-                        <div className="flex items-start justify-between">
-                          <KeyIcon className="h-4 w-4 text-foreground mt-0.5 shrink-0" />
-                          {!minimaxIsOAuthMode && <CheckCircleIcon className="h-4 w-4 text-primary shrink-0" />}
-                        </div>
-                        <p className="text-xs font-semibold text-foreground mt-1.5">{i18nService.t('minimaxOAuthTabApiKey')}</p>
-                        <p className="text-[11px] text-secondary mt-0.5 leading-relaxed">{i18nService.t('minimaxAuthApiKeyDesc')}</p>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setProviders(prev => ({
-                          ...prev,
-                          minimax: {
-                            ...prev.minimax,
-                            authType: 'oauth',
-                            enabled: prev.minimax.enabled && (prev.minimax.oauthAccessToken?.trim().length ?? 0) > 0,
-                          },
-                        }))}
-                        className={`flex-1 p-3 rounded-xl border-2 text-left transition-all ${minimaxIsOAuthMode ? 'border-primary bg-primary/5' : 'border-border opacity-60 hover:opacity-80'}`}
-                      >
-                        <div className="flex items-start justify-between">
-                          <ShieldCheckIcon className="h-4 w-4 text-foreground mt-0.5 shrink-0" />
-                          {minimaxIsOAuthMode && <CheckCircleIcon className="h-4 w-4 text-primary shrink-0" />}
-                        </div>
-                        <p className="text-xs font-semibold text-foreground mt-1.5">{i18nService.t('minimaxOAuthTabOAuth')}</p>
-                        <p className="text-[11px] text-secondary mt-0.5 leading-relaxed">{i18nService.t('minimaxAuthOAuthDesc')}</p>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* API Key mode */}
-                  {!minimaxIsOAuthMode && (
-                    <div className="min-h-[68px]">
-                      <div className="flex items-center justify-between mb-1">
-                        <label htmlFor="minimax-apiKey" className="block text-xs font-medium dark:text-claude-darkText text-claude-text">
-                          {i18nService.t('apiKey')}
-                        </label>
-                        {ProviderRegistry.get('minimax')?.apiKeyUrl && (
-                          <button
-                            type="button"
-                            onClick={() => void window.electron.shell.openExternal(ProviderRegistry.get('minimax')!.apiKeyUrl!)}
-                            className="text-[11px] text-claude-accent hover:underline transition-colors"
-                          >
-                            {i18nService.t('getApiKey')} →
-                          </button>
-                        )}
-                      </div>
-                      <div className="relative">
-                      <input
-                        type={showApiKey ? 'text' : 'password'}
-                        id="minimax-apiKey"
-                        value={providers.minimax.apiKey}
-                        onChange={(e) => handleProviderConfigChange('minimax', 'apiKey', e.target.value)}
-                        className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-xs"
-                        placeholder={i18nService.t('apiKeyPlaceholder')}
-                      />
-                      <div className="absolute right-2 inset-y-0 flex items-center gap-1">
-                        {providers.minimax.apiKey && (
-                          <button
-                            type="button"
-                            onClick={() => handleProviderConfigChange('minimax', 'apiKey', '')}
-                            className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                            title={i18nService.t('clear') || 'Clear'}
-                          >
-                            <XCircleIconSolid className="h-4 w-4" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => setShowApiKey(!showApiKey)}
-                          className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                          title={showApiKey ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
-                        >
-                          {showApiKey ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
-                        </button>
-                      </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* OAuth mode */}
-                  {minimaxIsOAuthMode && (
-                    <div className="space-y-2 min-h-[68px]">
-                      {/* Already logged in */}
-                      {minimaxOAuthPhase.kind === 'idle' && providers.minimax.oauthAccessToken && (
-                        <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20 space-y-2">
-                          <p className="text-xs text-green-600 dark:text-green-400 font-medium">
-                            {i18nService.t('minimaxOAuthLoggedIn')}
-                          </p>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleMiniMaxDeviceLogin(minimaxOAuthRegion)}
-                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
-                            >
-                              {i18nService.t('minimaxOAuthRelogin')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleMiniMaxOAuthLogout}
-                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
-                            >
-                              {i18nService.t('minimaxOAuthLogout')}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Not logged in yet — show region selector + login button */}
-                      {minimaxOAuthPhase.kind === 'idle' && !providers.minimax.oauthAccessToken && (
-                        <div className="space-y-2">
-                          <div>
-                            <label className="block text-xs font-medium text-foreground mb-1">
-                              {i18nService.t('minimaxOAuthRegionLabel')}
-                            </label>
-                            <div className="flex rounded-xl overflow-hidden border border-border">
-                              <button
-                                type="button"
-                                onClick={() => setMinimaxOAuthRegion('cn')}
-                                className={`flex-1 py-1.5 text-xs font-medium transition-colors ${minimaxOAuthRegion === 'cn' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
-                              >
-                                {i18nService.t('minimaxOAuthRegionCN')}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setMinimaxOAuthRegion('global')}
-                                className={`flex-1 py-1.5 text-xs font-medium transition-colors ${minimaxOAuthRegion === 'global' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
-                              >
-                                {i18nService.t('minimaxOAuthRegionGlobal')}
-                              </button>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleMiniMaxDeviceLogin(minimaxOAuthRegion)}
-                            className="w-full py-2 text-xs font-medium rounded-xl bg-primary text-white hover:bg-primary-hover transition-colors"
-                          >
-                            {i18nService.t('minimaxOAuthLogin')}
-                          </button>
-                          <p className="text-[11px] text-secondary">
-                            {i18nService.t('minimaxOAuthHint')}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Requesting code */}
-                      {minimaxOAuthPhase.kind === 'requesting_code' && (
-                        <div className="p-3 rounded-xl bg-surface-inset border border-border">
-                          <p className="text-xs text-secondary">
-                            {i18nService.t('minimaxOAuthLoggingIn')}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Pending — show user code */}
-                      {minimaxOAuthPhase.kind === 'pending' && (
-                        <div className="p-3 rounded-xl bg-surface-inset border border-border space-y-2">
-                          <p className="text-xs text-foreground font-medium">
-                            {i18nService.t('minimaxOAuthOpenBrowserHint')}
-                          </p>
-                          <div>
-                            <span className="text-[11px] text-secondary">
-                              {i18nService.t('minimaxOAuthUserCode')}:&nbsp;
-                            </span>
-                            <code className="text-xs font-mono text-primary">
-                              {minimaxOAuthPhase.userCode}
-                            </code>
-                          </div>
-                          <a
-                            href={minimaxOAuthPhase.verificationUri}
-                            onClick={(e) => { e.preventDefault(); void window.electron.shell.openExternal(minimaxOAuthPhase.verificationUri); }}
-                            className="block text-[11px] text-primary underline truncate"
-                          >
-                            {minimaxOAuthPhase.verificationUri}
-                          </a>
-                          <p className="text-[11px] text-secondary">
-                            {i18nService.t('minimaxOAuthStatusPending')}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={handleCancelMiniMaxLogin}
-                            className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
-                          >
-                            {i18nService.t('minimaxOAuthCancel')}
-                          </button>
-                        </div>
-                      )}
-
-                      {/* Success */}
-                      {minimaxOAuthPhase.kind === 'success' && (
-                        <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20">
-                          <p className="text-xs text-green-600 dark:text-green-400 font-medium">
-                            {i18nService.t('minimaxOAuthStatusSuccess')}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Error */}
-                      {minimaxOAuthPhase.kind === 'error' && (
-                        <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 space-y-2">
-                          <p className="text-xs text-red-600 dark:text-red-400 font-medium">
-                            {i18nService.t('minimaxOAuthStatusError')}
-                          </p>
-                          <p className="text-[11px] text-red-600/80 dark:text-red-400/80 break-words">
-                            {minimaxOAuthPhase.message}
-                          </p>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleMiniMaxDeviceLogin(minimaxOAuthRegion)}
-                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-primary text-white hover:bg-primary-hover transition-colors"
-                            >
-                              {i18nService.t('minimaxOAuthRelogin')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setMinimaxOAuthPhase({ kind: 'idle' })}
-                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
-                            >
-                              {i18nService.t('minimaxOAuthCancel')}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Standard API key section for non-MiniMax providers */}
-              {providerRequiresApiKey(activeProvider) && activeProvider !== 'minimax' && (
-                <div>
-                  {/* Standard API Key input for non-Qwen providers */}
-                  {activeProvider !== 'qwen' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label htmlFor={`${activeProvider}-apiKey`} className="block text-xs font-medium dark:text-claude-darkText text-claude-text">
-                          {i18nService.t('apiKey')}
-                        </label>
-                        {ProviderRegistry.get(activeProvider)?.apiKeyUrl && (
-                          <button
-                            type="button"
-                            onClick={() => void window.electron.shell.openExternal(ProviderRegistry.get(activeProvider)!.apiKeyUrl!)}
-                            className="text-[11px] text-claude-accent hover:underline transition-colors"
-                          >
-                            {i18nService.t('getApiKey')} →
-                          </button>
-                        )}
-                      </div>
-                      <div className="relative">
-                        <input
-                          type={showApiKey ? 'text' : 'password'}
-                          id={`${activeProvider}-apiKey`}
-                          value={providers[activeProvider].apiKey}
-                          onChange={(e) => handleProviderConfigChange(activeProvider, 'apiKey', e.target.value)}
-                          className="block w-full rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset dark:border-claude-darkBorder border-claude-border border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 pr-16 text-xs"
-                          placeholder={i18nService.t('apiKeyPlaceholder')}
-                        />
-                        <div className="absolute right-2 inset-y-0 flex items-center gap-1">
-                          {providers[activeProvider].apiKey && (
-                            <button
-                              type="button"
-                              onClick={() => handleProviderConfigChange(activeProvider, 'apiKey', '')}
-                              className="p-0.5 rounded text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-claude-accent transition-colors"
-                              title={i18nService.t('clear') || 'Clear'}
-                            >
-                              <XCircleIconSolid className="h-4 w-4" />
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setShowApiKey(!showApiKey)}
-                            className="p-0.5 rounded text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-claude-accent transition-colors"
-                            title={showApiKey ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
-                          >
-                            {showApiKey ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Qwen API Key section */}
-                  {activeProvider === 'qwen' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label htmlFor="qwen-apiKey" className="block text-xs font-medium dark:text-claude-darkText text-claude-text">
-                          API Key
-                        </label>
-                        {ProviderRegistry.get('qwen')?.apiKeyUrl && (
-                          <button
-                            type="button"
-                            onClick={() => void window.electron.shell.openExternal(ProviderRegistry.get('qwen')!.apiKeyUrl!)}
-                            className="text-[11px] text-claude-accent hover:underline transition-colors"
-                          >
-                            {i18nService.t('getApiKey')} →
-                          </button>
-                        )}
-                      </div>
-                      <div className="relative">
-                        <input
-                          type={showApiKey ? 'text' : 'password'}
-                          id="qwen-apiKey"
-                          value={providers.qwen.apiKey}
-                          onChange={(e) => handleProviderConfigChange('qwen', 'apiKey', e.target.value)}
-                          className="block w-full rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset dark:border-claude-darkBorder border-claude-border border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 pr-16 text-xs"
-                          placeholder={i18nService.t('apiKeyPlaceholder')}
-                        />
-                        <div className="absolute right-2 inset-y-0 flex items-center gap-1">
-                          {providers.qwen.apiKey && (
-                            <button
-                              type="button"
-                              onClick={() => handleProviderConfigChange('qwen', 'apiKey', '')}
-                              className="p-0.5 rounded text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-claude-accent transition-colors"
-                              title={i18nService.t('clear') || 'Clear'}
-                            >
-                              <XCircleIconSolid className="h-4 w-4" />
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setShowApiKey(!showApiKey)}
-                            className="p-0.5 rounded text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-claude-accent transition-colors"
-                            title={showApiKey ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
-                          >
-                            {showApiKey ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {activeProvider === 'github-copilot' && (
-                <div>
-                  <label className="block text-xs font-medium dark:text-claude-darkText text-claude-text mb-2">
-                    {i18nService.t('githubCopilotAuth')}
-                  </label>
-
-                  {(copilotAuthStatus === 'idle' || copilotAuthStatus === 'error') && !providers['github-copilot'].apiKey && (
-                    <div className="space-y-2">
-                      <button
-                        type="button"
-                        onClick={handleCopilotSignIn}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-claude-accent text-white text-xs font-medium hover:bg-claude-accent/90 transition-colors"
-                      >
-                        <GitHubCopilotIcon className="w-4 h-4" />
-                        {i18nService.t('githubCopilotSignIn')}
-                      </button>
-                      {copilotError && (
-                        <p className="text-xs text-red-500 dark:text-red-400">{copilotError}</p>
-                      )}
-                    </div>
-                  )}
-
-                  {copilotAuthStatus === 'requesting' && (
-                    <div className="flex items-center gap-2 text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
-                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      {i18nService.t('githubCopilotRequesting')}
-                    </div>
-                  )}
-
-                  {(copilotAuthStatus === 'awaiting_user' || copilotAuthStatus === 'polling') && (
-                    <div className="space-y-3">
-                      <div className="p-3 rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset border border-claude-border dark:border-claude-darkBorder">
-                        <p className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary mb-2">
-                          {i18nService.t('githubCopilotEnterCode')}
-                        </p>
-                        <div className="flex items-center gap-2">
-                          <code className="text-lg font-mono font-bold tracking-widest dark:text-claude-darkText text-claude-text">
-                            {copilotUserCode}
-                          </code>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              navigator.clipboard.writeText(copilotUserCode);
-                            }}
-                            className="px-2 py-0.5 rounded text-[10px] text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-claude-accent border border-claude-border dark:border-claude-darkBorder transition-colors"
-                          >
-                            {i18nService.t('copy') || 'Copy'}
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => window.electron.shell.openExternal(copilotVerificationUri)}
-                          className="mt-2 text-xs text-claude-accent hover:underline"
-                        >
-                          {copilotVerificationUri}
-                        </button>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-2 text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
-                          <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                          </svg>
-                          {i18nService.t('githubCopilotWaiting')}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleCopilotCancelAuth}
-                          className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-red-500 transition-colors"
-                        >
-                          {i18nService.t('cancel')}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {(copilotAuthStatus === 'authenticated' || providers['github-copilot'].apiKey) && copilotAuthStatus !== 'requesting' && copilotAuthStatus !== 'awaiting_user' && copilotAuthStatus !== 'polling' && (
-                    <div className="flex items-center justify-between p-3 rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset border border-claude-border dark:border-claude-darkBorder">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-green-500" />
-                        <span className="text-xs dark:text-claude-darkText text-claude-text">
-                          {copilotGithubUser
-                            ? `${i18nService.t('githubCopilotConnected')} @${copilotGithubUser}`
-                            : i18nService.t('githubCopilotConnected')}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleCopilotSignOut}
-                        className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-red-500 transition-colors"
-                      >
-                        {i18nService.t('githubCopilotSignOut')}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {isCustomProvider(activeProvider) && (
-                <div>
-                  <label htmlFor={`${activeProvider}-displayName`} className="block text-xs font-medium dark:text-claude-darkText text-claude-text mb-1">
-                    {i18nService.t('customDisplayName')}
-                  </label>
-                  <input
-                    type="text"
-                    id={`${activeProvider}-displayName`}
-                    value={(providers[activeProvider] as ProviderConfig)?.displayName ?? ''}
-                    onChange={(e) => handleProviderConfigChange(activeProvider, 'displayName', e.target.value)}
-                    className="block w-full rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset dark:border-claude-darkBorder border-claude-border border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 text-xs"
-                    placeholder={i18nService.t('customDisplayNamePlaceholder')}
-                  />
-                </div>
-              )}
-
-              {!(activeProvider === 'minimax' && minimaxIsOAuthMode) && (
-              <div>
-                <label htmlFor={`${activeProvider}-baseUrl`} className="block text-xs font-medium text-foreground mb-1">
-                  {i18nService.t('baseUrl')}
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    id={`${activeProvider}-baseUrl`}
-                    value={
-                      (() => {
-                        // Coding plan override: delegate to ProviderRegistry (50e20b76)
-                        const fmt = getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat);
-                        if (fmt !== 'gemini') {
-                          const cpUrl = (providers[activeProvider] as { codingPlanEnabled?: boolean }).codingPlanEnabled
-                            ? ProviderRegistry.getCodingPlanUrl(activeProvider, fmt)
-                            : undefined;
-                          if (cpUrl) return cpUrl;
-                        }
-                        return providers[activeProvider].baseUrl;
-                      })()
-                    }
-                    onChange={(e) => handleProviderConfigChange(activeProvider, 'baseUrl', e.target.value)}
-                    disabled={isBaseUrlLocked}
-                    className={`block w-full rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset dark:border-claude-darkBorder border-claude-border border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 pr-8 text-xs ${isBaseUrlLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    placeholder={
-                      activeProvider === 'qwen'
-                        ? 'https://dashscope.aliyuncs.com/apps/anthropic'
-                        : getProviderDefaultBaseUrl(activeProvider, getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat)) || defaultConfig.providers?.[activeProvider]?.baseUrl || i18nService.t('baseUrlPlaceholder')
-                    }
-                  />
-                  {providers[activeProvider].baseUrl && !isBaseUrlLocked && (
-                    <div className="absolute right-2 inset-y-0 flex items-center">
-                      <button
-                        type="button"
-                        onClick={() => handleProviderConfigChange(activeProvider, 'baseUrl', '')}
-                        className="p-0.5 rounded text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-claude-accent transition-colors"
-                        title={i18nService.t('clear') || 'Clear'}
-                      >
-                        <XCircleIconSolid className="h-4 w-4" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-                {isCustomProvider(activeProvider) && (
-                <div className="mt-1.5 space-y-0.5 text-[11px] text-secondary">
-                  <p>
-                    <span className="text-sm text-muted mr-1">•</span>
-                    {i18nService.t('baseUrlHint1')}
-                    <code className="ml-1 text-primary break-all">{i18nService.t('baseUrlHintExample1')}</code>
-                  </p>
-                  <p>
-                    <span className="text-sm text-muted mr-1">•</span>
-                    {i18nService.t('baseUrlHint2')}
-                    <code className="ml-1 text-primary break-all">{i18nService.t('baseUrlHintExample2')}</code>
-                  </p>
-                </div>
-                )}
-                {/* GLM Coding Plan 提示 */}
-                {activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled && (
-                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
-                    <p className="text-[11px] text-primary dark:text-primary">
-                      <span className="font-medium">GLM Coding Plan:</span> {i18nService.t('zhipuCodingPlanEndpointHint')}
-                    </p>
-                  </div>
-                )}
-                {/* Qwen Coding Plan 提示 */}
-                {activeProvider === 'qwen' && providers.qwen.codingPlanEnabled && (
-                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
-                    <p className="text-[11px] text-primary dark:text-primary">
-                      <span className="font-medium">Coding Plan:</span> {i18nService.t('qwenCodingPlanEndpointHint')}
-                    </p>
-                  </div>
-                )}
-                {/* Volcengine Coding Plan 提示 */}
-                {activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled && (
-                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
-                    <p className="text-[11px] text-primary dark:text-primary">
-                      <span className="font-medium">Coding Plan:</span> {i18nService.t('volcengineCodingPlanEndpointHint')}
-                    </p>
-                  </div>
-                )}
-                {/* Moonshot Coding Plan 提示 */}
-                {activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled && (
-                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
-                    <p className="text-[11px] text-primary dark:text-primary">
-                      <span className="font-medium">Coding Plan:</span> {i18nService.t('moonshotCodingPlanEndpointHint')}
-                    </p>
-                  </div>
-                )}
-              </div>
-              )}
-
-              {/* API 格式选择器 */}
-              {shouldShowApiFormatSelector(activeProvider) && !(activeProvider === 'minimax' && minimaxIsOAuthMode) && (
-                <div>
-                  <label htmlFor={`${activeProvider}-apiFormat`} className="block text-xs font-medium text-foreground mb-1">
-                    {i18nService.t('apiFormat')}
-                  </label>
-                  <div className="flex items-center space-x-4">
-                    <label className="flex items-center">
-                      <input
-                        type="radio"
-                        name={`${activeProvider}-apiFormat`}
-                        value="anthropic"
-                        checked={getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat) !== 'openai'}
-                        onChange={() => handleProviderConfigChange(activeProvider, 'apiFormat', 'anthropic')}
-                        className="h-3.5 w-3.5 text-claude-accent focus:ring-claude-accent dark:bg-claude-darkSurface bg-claude-surface disabled:opacity-50"
-                      />
-                      <span className="ml-2 text-xs text-foreground">
-                        {i18nService.t('apiFormatNative')}
-                      </span>
-                    </label>
-                    <label className="flex items-center">
-                      <input
-                        type="radio"
-                        name={`${activeProvider}-apiFormat`}
-                        value="openai"
-                        checked={getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat) === 'openai'}
-                        onChange={() => handleProviderConfigChange(activeProvider, 'apiFormat', 'openai')}
-                        className="h-3.5 w-3.5 text-claude-accent focus:ring-claude-accent dark:bg-claude-darkSurface bg-claude-surface disabled:opacity-50"
-                      />
-                      <span className="ml-2 text-xs text-foreground">
-                        {i18nService.t('apiFormatOpenAI')}
-                      </span>
-                    </label>
-                  </div>
-                  <p className="mt-1 text-xs text-secondary">
-                    {i18nService.t('apiFormatHint')}
-                  </p>
-                </div>
-              )}
-
-              {/* GLM Coding Plan 开关 (仅 Zhipu) */}
-              {activeProvider === 'zhipu' && (
-                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-medium text-foreground">
-                        GLM Coding Plan
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                        Beta
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-secondary">
-                      {i18nService.t('zhipuCodingPlanHint')}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-3">
-                    <input
-                      type="checkbox"
-                      checked={providers.zhipu.codingPlanEnabled ?? false}
-                      onChange={(e) => handleProviderConfigChange('zhipu', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                  </label>
-                </div>
-              )}
-
-              {/* Qwen Coding Plan 开关 (仅 Qwen) */}
-              {activeProvider === 'qwen' && (
-                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-medium text-foreground">
-                        Coding Plan
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                        {i18nService.t('codingPlanSubscriptionBadge')}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-secondary">
-                      {i18nService.t('qwenCodingPlanHint')}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-3">
-                    <input
-                      type="checkbox"
-                      checked={providers.qwen.codingPlanEnabled ?? false}
-                      onChange={(e) => handleProviderConfigChange('qwen', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                  </label>
-                </div>
-              )}
-
-              {/* Volcengine Coding Plan 开关 (仅 Volcengine) */}
-              {activeProvider === 'volcengine' && (
-                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-medium text-foreground">
-                        Coding Plan
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                        Beta
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-secondary">
-                      {i18nService.t('volcengineCodingPlanHint')}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-3">
-                    <input
-                      type="checkbox"
-                      checked={providers.volcengine.codingPlanEnabled ?? false}
-                      onChange={(e) => handleProviderConfigChange('volcengine', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                  </label>
-                </div>
-              )}
-
-              {/* Moonshot Coding Plan 开关 (仅 Moonshot) */}
-              {activeProvider === 'moonshot' && (
-                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-medium text-foreground">
-                        Coding Plan
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                        Beta
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-secondary">
-                      {i18nService.t('moonshotCodingPlanHint')}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-3">
-                    <input
-                      type="checkbox"
-                      checked={providers.moonshot.codingPlanEnabled ?? false}
-                      onChange={(e) => handleProviderConfigChange('moonshot', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                  </label>
-                </div>
-              )}
-
-              {/* 测试连接按钮 */}
-              {!(activeProvider === 'minimax' && minimaxIsOAuthMode) && (
-              <div className="flex items-center space-x-3">
-                <button
-                  type="button"
-                  onClick={handleTestConnection}
-                  disabled={isTesting || (providerRequiresApiKey(activeProvider) && !providers[activeProvider].apiKey)}
-                  className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-xl border dark:border-claude-darkBorder border-claude-border dark:text-claude-darkText text-claude-text dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
-                >
-                  <SignalIcon className="h-3.5 w-3.5 mr-1.5" />
-                  {isTesting ? i18nService.t('testing') : i18nService.t('testConnection')}
-                </button>
-              </div>
-              )}
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <h3 className="text-xs font-medium text-foreground">
-                    {i18nService.t('availableModels')}
-                  </h3>
-                  <button
-                    type="button"
-                    onClick={handleAddModel}
-                    className="inline-flex items-center text-xs text-primary hover:text-primary-hover"
-                  >
-                    <PlusCircleIcon className="h-3.5 w-3.5 mr-1" />
-                    {i18nService.t('addModel')}
-                  </button>
-                </div>
-
-                {/* Models List */}
-                <div className="space-y-1.5 max-h-60 overflow-y-auto">
-                  {(providers[activeProvider].models ?? []).map(model => (
-                    <div
-                      key={model.id}
-                      className="bg-surface p-2 rounded-xl border-border border transition-colors hover:border-primary group"
-                    >
-                      <div className="flex items-center justify-between gap-2 min-w-0">
-                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                          <div className="w-1.5 h-1.5 shrink-0 rounded-full bg-green-400"></div>
-                          <div className="min-w-0">
-                            <div className="text-foreground font-medium text-[11px] truncate">{model.name}</div>
-                            <div className="text-[10px] text-secondary truncate">{model.id}</div>
-                          </div>
-                        </div>
-                        <div className="flex items-center shrink-0 space-x-1">
-                          {model.supportsImage && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                              {i18nService.t('imageInput')}
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => handleEditModel(model.id, model.name, model.supportsImage)}
-                            className="p-0.5 text-secondary hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <PencilIcon className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteModel(model.id)}
-                            className="p-0.5 text-secondary hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <TrashIcon className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-
-                  {(!providers[activeProvider].models || providers[activeProvider].models.length === 0) && (
-                    <div className="bg-surface p-2.5 rounded-xl border border-border-subtle text-center">
-                      <p className="text-[11px] text-secondary">{i18nService.t('noModelsAvailable')}</p>
-                      <button
-                        type="button"
-                        onClick={handleAddModel}
-                        className="mt-1.5 inline-flex items-center text-[11px] font-medium text-primary hover:text-primary-hover"
-                      >
-                        <PlusCircleIcon className="h-3 w-3 mr-1" />
-                        {i18nService.t('addFirstModel')}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-
-      case 'coworkAgent':
-        return (
-          <div className="space-y-6">
-            {/* Agent Settings (IDENTITY.md + SOUL.md) */}
-            <div className="space-y-4 rounded-xl border px-4 py-4 border-border">
-              <div className="text-sm font-medium text-foreground">
-                {i18nService.t('coworkBootstrapAgentSectionTitle')}
-              </div>
-              {[
-                { filename: 'IDENTITY.md', titleKey: 'coworkBootstrapIdentityTitle', hintKey: 'coworkBootstrapIdentityHint', value: bootstrapIdentity, setter: setBootstrapIdentity },
-                { filename: 'SOUL.md', titleKey: 'coworkBootstrapSoulTitle', hintKey: 'coworkBootstrapSoulHint', value: bootstrapSoul, setter: setBootstrapSoul },
-              ].map(({ filename, titleKey, hintKey, value, setter }) => (
-                <div key={filename} className="space-y-2">
-                  <div className="text-xs font-medium text-secondary">
-                    {i18nService.t(titleKey)}
-                    <span className="ml-1.5 font-normal opacity-60">
-                      （{i18nService.t('coworkBootstrapStoragePath')}：<span className="font-mono">{joinWorkspacePath(coworkConfig.workingDirectory, filename)}</span>）
-                    </span>
-                  </div>
-                  <textarea
-                    value={value}
-                    onChange={(e) => setter(e.target.value)}
-                    rows={3}
-                    className="w-full rounded-lg border px-3 py-2 text-sm border-border bg-surface text-foreground resize-y"
-                    placeholder={i18nService.t(hintKey)}
-                  />
-                </div>
-              ))}
-            </div>
-
-            {/* User Profile (USER.md) */}
-            <div className="space-y-3 rounded-xl border px-4 py-4 border-border">
-              <div className="text-sm font-medium text-foreground">
-                {i18nService.t('coworkBootstrapUserTitle')}
-                <span className="ml-1.5 text-xs font-normal opacity-60 text-secondary">
-                  （{i18nService.t('coworkBootstrapStoragePath')}：<span className="font-mono">{joinWorkspacePath(coworkConfig.workingDirectory, 'USER.md')}</span>）
-                </span>
-              </div>
-              <textarea
-                value={bootstrapUser}
-                onChange={(e) => setBootstrapUser(e.target.value)}
-                rows={3}
-                className="w-full rounded-lg border px-3 py-2 text-sm border-border bg-surface text-foreground resize-y"
-                placeholder={i18nService.t('coworkBootstrapUserHint')}
-              />
-            </div>
-          </div>
+          <ModelSettingsSection
+            providers={providers}
+            activeProvider={activeProvider}
+            visibleProviders={visibleProviders}
+            showApiKey={showApiKey}
+            setShowApiKey={setShowApiKey}
+            isImportingProviders={isImportingProviders}
+            isExportingProviders={isExportingProviders}
+            minimaxIsOAuthMode={minimaxIsOAuthMode}
+            openaiIsOAuthMode={openaiIsOAuthMode}
+            isBaseUrlLocked={isBaseUrlLocked}
+            minimaxOAuthPhase={minimaxOAuthPhase}
+            minimaxOAuthRegion={minimaxOAuthRegion}
+            setMinimaxOAuthRegion={setMinimaxOAuthRegion}
+            setMinimaxOAuthPhase={setMinimaxOAuthPhase}
+            openaiOAuthPhase={openaiOAuthPhase}
+            setOpenaiOAuthPhase={setOpenaiOAuthPhase}
+            openaiOAuthStatus={openaiOAuthStatus}
+            copilotAuthStatus={copilotAuthStatus}
+            copilotUserCode={copilotUserCode}
+            copilotVerificationUri={copilotVerificationUri}
+            copilotGithubUser={copilotGithubUser}
+            copilotError={copilotError}
+            isTesting={isTesting}
+            testResult={testResult}
+            isTestResultModalOpen={isTestResultModalOpen}
+            setIsTestResultModalOpen={setIsTestResultModalOpen}
+            pendingDeleteProvider={pendingDeleteProvider}
+            setPendingDeleteProvider={setPendingDeleteProvider}
+            importInputRef={importInputRef}
+            handleImportProvidersClick={handleImportProvidersClick}
+            handleExportProviders={handleExportProviders}
+            handleImportProviders={handleImportProviders}
+            handleProviderChange={handleProviderChange}
+            toggleProviderEnabled={toggleProviderEnabled}
+            handleAddCustomProvider={handleAddCustomProvider}
+            handleDeleteCustomProvider={handleDeleteCustomProvider}
+            confirmDeleteCustomProvider={confirmDeleteCustomProvider}
+            handleProviderConfigChange={handleProviderConfigChange}
+            setProviders={setProviders}
+            handleMiniMaxDeviceLogin={handleMiniMaxDeviceLogin}
+            handleCancelMiniMaxLogin={handleCancelMiniMaxLogin}
+            handleMiniMaxOAuthLogout={handleMiniMaxOAuthLogout}
+            handleOpenAIOAuthLogin={handleOpenAIOAuthLogin}
+            handleCancelOpenAIOAuthLogin={handleCancelOpenAIOAuthLogin}
+            handleOpenAIOAuthLogout={handleOpenAIOAuthLogout}
+            handleCopilotSignIn={handleCopilotSignIn}
+            handleCopilotSignOut={handleCopilotSignOut}
+            handleCopilotCancelAuth={handleCopilotCancelAuth}
+            handleTestConnection={handleTestConnection}
+            handleAddModel={handleAddModel}
+            handleEditModel={handleEditModel}
+            handleDeleteModel={handleDeleteModel}
+          />
         );
 
       case 'shortcuts':
@@ -3935,6 +3212,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       case 'im':
         return <IMSettings />;
 
+      case 'plugins':
+        return <PluginsSettings />;
+
       case 'about':
         return (
           <div className="flex min-h-full flex-col items-center pt-6 pb-3">
@@ -3956,24 +3236,21 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
 
             {/* Info Card */}
             <div className="w-full mt-8 rounded-xl border border-border overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm text-foreground">{i18nService.t('aboutVersion')}</span>
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 border-b border-border">
+                <span className="shrink-0 text-sm text-foreground">{i18nService.t('aboutVersion')}</span>
+                <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                   <span className="text-sm text-secondary">{appVersion}</span>
                   {!enterpriseConfig?.disableUpdate && (
                   <button
                     type="button"
-                    disabled={updateCheckStatus === 'checking'}
+                    disabled={updateCheckStatus === 'checking' || updateCheckStatus === 'downloading'}
                     onClick={(e) => {
                       e.stopPropagation();
                       void handleCheckUpdate();
                     }}
                     className="text-xs px-2 py-0.5 rounded-md border border-border text-secondary hover:text-primary dark:hover:text-primary hover:border-primary dark:hover:border-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {updateCheckStatus === 'checking' && i18nService.t('updateChecking')}
-                    {updateCheckStatus === 'upToDate' && i18nService.t('updateUpToDate')}
-                    {updateCheckStatus === 'error' && i18nService.t('updateCheckFailed')}
-                    {updateCheckStatus === 'idle' && i18nService.t('checkForUpdate')}
+                    {updateButtonLabel}
                   </button>
                   )}
                   {enterpriseConfig?.disableUpdate && (
@@ -3983,9 +3260,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                   )}
                 </div>
               </div>
-              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm text-foreground">{i18nService.t('aboutContactEmail')}</span>
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 border-b border-border">
+                <span className="shrink-0 text-sm text-foreground">{i18nService.t('aboutContactEmail')}</span>
+                <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                   <button
                     type="button"
                     onClick={(e) => {
@@ -3993,7 +3270,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                       void handleCopyContactEmail();
                     }}
                     title={i18nService.t('copyToClipboard')}
-                    className="text-sm text-secondary bg-transparent border-none appearance-none p-0 m-0 cursor-pointer focus:outline-none"
+                    className="min-w-0 break-all text-right text-sm text-secondary bg-transparent border-none appearance-none p-0 m-0 cursor-pointer focus:outline-none"
                   >
                     {ABOUT_CONTACT_EMAIL}
                   </button>
@@ -4004,35 +3281,35 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                   )}
                 </div>
               </div>
-              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm text-foreground">{i18nService.t('aboutUserManual')}</span>
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 border-b border-border">
+                <span className="shrink-0 text-sm text-foreground">{i18nService.t('aboutUserManual')}</span>
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleOpenUserManual();
                   }}
-                  className="text-sm text-secondary hover:text-primary dark:hover:text-primary bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer focus:outline-none hover:bg-surface-raised transition-colors"
+                  className="min-w-0 break-all text-right text-sm text-secondary hover:text-primary dark:hover:text-primary bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer focus:outline-none hover:bg-surface-raised transition-colors"
                 >
                   {ABOUT_USER_MANUAL_URL}
                 </button>
               </div>
-              <div className={`flex items-center justify-between px-4 py-3${testModeUnlocked ? ' border-b border-border' : ''}`}>
-                <span className="text-sm text-foreground">{i18nService.t('aboutUserCommunity')}</span>
+              <div className={`flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3${testModeUnlocked ? ' border-b border-border' : ''}`}>
+                <span className="shrink-0 text-sm text-foreground">{i18nService.t('aboutUserCommunity')}</span>
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleOpenUserCommunity();
                   }}
-                  className="text-sm text-secondary hover:text-primary dark:hover:text-primary bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer focus:outline-none hover:bg-surface-raised transition-colors"
+                  className="min-w-0 break-all text-right text-sm text-secondary hover:text-primary dark:hover:text-primary bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer focus:outline-none hover:bg-surface-raised transition-colors"
                 >
                   {ABOUT_USER_COMMUNITY_URL}
                 </button>
               </div>
               {testModeUnlocked && (
-                <div className="flex items-center justify-between px-4 py-3">
-                  <span className="text-sm text-foreground">{i18nService.t('testMode')}</span>
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+                  <span className="shrink-0 text-sm text-foreground">{i18nService.t('testMode')}</span>
                   <button
                     type="button"
                     role="switch"
@@ -4054,7 +3331,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
 
             {/* Footer */}
             <div className="mt-auto w-full pt-14 pb-2 flex flex-col items-center">
-              <div className="flex items-center justify-center text-sm text-secondary">
+              <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm text-secondary">
                 <button
                   type="button"
                   onClick={(e) => {
@@ -4065,7 +3342,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                 >
                   {i18nService.t('aboutServiceTerms')}
                 </button>
-                <span className="mx-3 text-xs opacity-40">|</span>
+                <span className="text-xs opacity-40">|</span>
                 <button
                   type="button"
                   onClick={(e) => {
@@ -4079,10 +3356,10 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                 </button>
               </div>
 
-              <p className="mt-5 text-xs text-secondary">
+              <p className="mt-5 text-center text-xs text-secondary">
                 {i18nService.t('copyrightHolder')}
               </p>
-              <p className="mt-1 text-xs text-secondary">
+              <p className="mt-1 text-center text-xs text-secondary">
                 Copyright &copy; {new Date().getFullYear()} NetEase Youdao. All Rights Reserved.
               </p>
             </div>
@@ -4095,9 +3372,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   };
 
   return (
-    <Modal onClose={onClose} overlayClassName="fixed inset-0 z-50 modal-backdrop flex items-center justify-center">
+    <Modal
+      onClose={onClose}
+      overlayClassName="fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-3 sm:p-4"
+      className="w-[calc(100vw-1.5rem)] max-w-[900px] min-w-0 sm:w-[calc(100vw-2rem)]"
+    >
       <div
-        className="relative flex w-[900px] h-[80vh] rounded-2xl border-border border shadow-modal overflow-hidden modal-content"
+        className="relative flex h-[80vh] max-h-[calc(100vh-2rem)] w-full min-w-0 rounded-2xl border-border border shadow-modal overflow-hidden modal-content"
         onClick={handleSettingsClick}
       >
         {/* Left sidebar */}
@@ -4116,8 +3397,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                     : 'text-secondary hover:text-foreground hover:bg-surface-raised'
                 }`}
               >
-                {tab.icon}
-                <span>{tab.label}</span>
+                <span className="shrink-0">{tab.icon}</span>
+                <span className="min-w-0 truncate">{tab.label}</span>
               </button>
             ))}
           </nav>
@@ -4126,8 +3407,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         {/* Right content */}
         <div className="relative flex-1 flex flex-col min-w-0 overflow-hidden bg-background rounded-r-2xl">
           {/* Content header */}
-          <div className="flex justify-between items-center px-6 pt-5 pb-3 shrink-0">
-            <h3 className="text-lg font-semibold text-foreground">{activeTabLabel}</h3>
+          <div className="flex justify-between items-center gap-3 px-6 pt-5 pb-3 shrink-0">
+            <h3 className="min-w-0 truncate text-lg font-semibold text-foreground">{activeTabLabel}</h3>
             <button
               onClick={onClose}
               className="text-secondary hover:text-foreground p-1.5 hover:bg-surface-raised rounded-lg transition-colors"
@@ -4169,7 +3450,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-foreground hover:bg-surface-raised rounded-xl transition-colors text-sm font-medium border border-border active:scale-[0.98]"
+                className="px-4 py-2 rounded-xl transition-colors text-sm font-medium border border-border text-foreground hover:bg-surface-raised active:scale-[0.98]"
               >
                 {i18nService.t('cancel')}
               </button>
@@ -4185,250 +3466,26 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
 
         </div>
 
-        {isTestResultModalOpen && testResult && (
-          <div
-            className="absolute inset-0 z-30 flex items-center justify-center bg-black/35 px-4 rounded-2xl"
-            onClick={() => setIsTestResultModalOpen(false)}
-          >
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-label={i18nService.t('connectionTestResult')}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md rounded-2xl bg-background border-border border shadow-modal p-4"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="text-sm font-semibold text-foreground">
-                  {i18nService.t('connectionTestResult')}
-                </h4>
-                <button
-                  type="button"
-                  onClick={() => setIsTestResultModalOpen(false)}
-                  className="p-1 text-secondary hover:text-foreground rounded-md hover:bg-surface-raised"
-                >
-                  <XMarkIcon className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2 text-xs text-secondary">
-                <span>{ProviderRegistry.get(testResult.provider)?.label ?? testResult.provider}</span>
-                <span className="text-[11px]">•</span>
-                <span className={`inline-flex items-center gap-1 ${testResult.success ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                  {testResult.success ? (
-                    <CheckCircleIcon className="h-4 w-4" />
-                  ) : (
-                    <XCircleIcon className="h-4 w-4" />
-                  )}
-                  {testResult.success ? i18nService.t('connectionSuccess') : i18nService.t('connectionFailed')}
-                </span>
-              </div>
-
-              <p className="mt-3 text-xs leading-5 text-foreground whitespace-pre-wrap break-words max-h-56 overflow-y-auto">
-                {testResult.message}
-              </p>
-
-              <div className="mt-4 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setIsTestResultModalOpen(false)}
-                  className="px-3 py-1.5 text-xs font-medium rounded-xl border border-border text-foreground hover:bg-surface-raised transition-colors active:scale-[0.98]"
-                >
-                  {i18nService.t('close')}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {pendingDeleteProvider && (
-          <div
-            className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 px-4 rounded-2xl"
-            onClick={() => setPendingDeleteProvider(null)}
-          >
-            <div
-              role="dialog"
-              aria-modal="true"
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm rounded-2xl dark:bg-claude-darkSurface bg-claude-bg dark:border-claude-darkBorder border-claude-border border shadow-modal p-4"
-            >
-              <p className="text-sm dark:text-claude-darkText text-claude-text">
-                {i18nService.t('confirmDeleteCustomProvider')}
-              </p>
-              <div className="mt-4 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPendingDeleteProvider(null)}
-                  className="px-3 py-1.5 text-xs font-medium rounded-xl border dark:border-claude-darkBorder border-claude-border dark:text-claude-darkText text-claude-text dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-colors active:scale-[0.98]"
-                >
-                  {i18nService.t('cancel')}
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmDeleteCustomProvider}
-                  className="px-3 py-1.5 text-xs font-medium rounded-xl bg-red-500 hover:bg-red-600 text-white transition-colors active:scale-[0.98]"
-                >
-                  {i18nService.t('deleteCustomProvider')}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {(isAddingModel || isEditingModel) && (
-          <div
-            className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 px-4 rounded-2xl"
-            onClick={handleCancelModelEdit}
-          >
-              <div
-                role="dialog"
-                aria-modal="true"
-                aria-label={isEditingModel ? i18nService.t('editModel') : i18nService.t('addNewModel')}
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={handleModelDialogKeyDown}
-                className="w-full max-w-md rounded-2xl bg-background border-border border shadow-modal p-4"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-sm font-semibold text-foreground">
-                    {isEditingModel ? i18nService.t('editModel') : i18nService.t('addNewModel')}
-                  </h4>
-                  <button
-                    type="button"
-                    onClick={handleCancelModelEdit}
-                    className="p-1 text-secondary hover:text-foreground rounded-md hover:bg-surface-raised"
-                  >
-                    <XMarkIcon className="h-4 w-4" />
-                  </button>
-                </div>
-
-                {modelFormError && (
-                  <p className="mb-3 text-xs text-red-600 dark:text-red-400">
-                    {modelFormError}
-                  </p>
-                )}
-
-                <div className="space-y-3">
-                  {activeProvider === 'ollama' ? (
-                    <>
-                      <div>
-                        <label className="block text-xs font-medium text-secondary mb-1">
-                          {i18nService.t('ollamaModelName')}
-                        </label>
-                        <input
-                          autoFocus
-                          type="text"
-                          value={newModelId}
-                          onChange={(e) => {
-                            setNewModelId(e.target.value);
-                            if (!newModelName || newModelName === newModelId) {
-                              setNewModelName(e.target.value);
-                            }
-                            if (modelFormError) {
-                              setModelFormError(null);
-                            }
-                          }}
-                          className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-xs"
-                          placeholder={i18nService.t('ollamaModelNamePlaceholder')}
-                        />
-                        <p className="mt-1 text-[11px] text-muted">
-                          {i18nService.t('ollamaModelNameHint')}
-                        </p>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-secondary mb-1">
-                          {i18nService.t('ollamaDisplayName')}
-                        </label>
-                        <input
-                          type="text"
-                          value={newModelName === newModelId ? '' : newModelName}
-                          onChange={(e) => {
-                            setNewModelName(e.target.value || newModelId);
-                            if (modelFormError) {
-                              setModelFormError(null);
-                            }
-                          }}
-                          className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-xs"
-                          placeholder={i18nService.t('ollamaDisplayNamePlaceholder')}
-                        />
-                        <p className="mt-1 text-[11px] text-muted">
-                          {i18nService.t('ollamaDisplayNameHint')}
-                        </p>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div>
-                        <label className="block text-xs font-medium text-secondary mb-1">
-                          {i18nService.t('modelName')}
-                        </label>
-                        <input
-                          autoFocus
-                          type="text"
-                          value={newModelName}
-                          onChange={(e) => {
-                            setNewModelName(e.target.value);
-                            if (modelFormError) {
-                              setModelFormError(null);
-                            }
-                          }}
-                          className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-xs"
-                          placeholder="GPT-4"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-secondary mb-1">
-                          {i18nService.t('modelId')}
-                        </label>
-                        <input
-                          type="text"
-                          value={newModelId}
-                          onChange={(e) => {
-                            setNewModelId(e.target.value);
-                            if (modelFormError) {
-                              setModelFormError(null);
-                            }
-                          }}
-                          className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-xs"
-                          placeholder="gpt-4"
-                        />
-                      </div>
-                    </>
-                  )}
-                  <div className="flex items-center space-x-2">
-                    <input
-                      id={`${activeProvider}-supportsImage`}
-                      type="checkbox"
-                      checked={newModelSupportsImage}
-                      onChange={(e) => setNewModelSupportsImage(e.target.checked)}
-                      className="h-3.5 w-3.5 text-primary focus:ring-primary bg-surface border-border rounded"
-                    />
-                    <label
-                      htmlFor={`${activeProvider}-supportsImage`}
-                      className="text-xs text-secondary"
-                    >
-                      {i18nService.t('supportsImageInput')}
-                    </label>
-                  </div>
-                </div>
-
-                <div className="flex justify-end space-x-2 mt-4">
-                  <button
-                    type="button"
-                    onClick={handleCancelModelEdit}
-                    className="px-3 py-1.5 text-xs text-foreground hover:bg-surface-raised rounded-xl border border-border"
-                  >
-                    {i18nService.t('cancel')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveNewModel}
-                    className="px-3 py-1.5 text-xs text-white bg-primary hover:bg-primary-hover rounded-xl active:scale-[0.98]"
-                  >
-                    {i18nService.t('save')}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+        <ModelEditorDialog
+          activeProvider={activeProvider}
+          isAddingModel={isAddingModel}
+          isEditingModel={isEditingModel}
+          newModelName={newModelName}
+          setNewModelName={setNewModelName}
+          newModelId={newModelId}
+          setNewModelId={setNewModelId}
+          newModelSupportsImage={newModelSupportsImage}
+          setNewModelSupportsImage={setNewModelSupportsImage}
+          newModelContextWindow={newModelContextWindow}
+          setNewModelContextWindow={setNewModelContextWindow}
+          newModelCustomParams={newModelCustomParams}
+          setNewModelCustomParams={setNewModelCustomParams}
+          modelFormError={modelFormError}
+          setModelFormError={setModelFormError}
+          handleSaveNewModel={handleSaveNewModel}
+          handleCancelModelEdit={handleCancelModelEdit}
+          handleModelDialogKeyDown={handleModelDialogKeyDown}
+        />
 
           {/* Memory Modal */}
           {showMemoryModal && (
@@ -4452,6 +3509,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                       {i18nService.t('coworkMemoryEditingTag')}
                     </div>
                   )}
+                  <label className="block text-xs font-medium text-secondary mb-1">
+                    {i18nService.t('coworkMemoryCrudContentLabel')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
+                  </label>
                   <textarea
                     value={coworkMemoryDraftText}
                     onChange={(event) => setCoworkMemoryDraftText(event.target.value)}
