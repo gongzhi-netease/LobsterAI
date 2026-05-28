@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { OpenClawSessionPatch } from '../../common/openclawSession';
 interface ApiResponse {
   ok: boolean;
   status: number;
@@ -23,6 +25,7 @@ interface CoworkSession {
   pinned: boolean;
   cwd: string;
   systemPrompt: string;
+  modelOverride: string;
   executionMode: 'auto' | 'local' | 'sandbox';
   activeSkillIds: string[];
   agentId: string;
@@ -53,12 +56,14 @@ interface CoworkConfig {
   workingDirectory: string;
   systemPrompt: string;
   executionMode: 'auto' | 'local' | 'sandbox';
-  agentEngine: 'openclaw' | 'yd_cowork';
+  agentEngine: 'openclaw';
   memoryEnabled: boolean;
   memoryImplicitUpdateEnabled: boolean;
   memoryLlmJudgeEnabled: boolean;
   memoryGuardLevel: 'strict' | 'standard' | 'relaxed';
   memoryUserMemoriesMaxItems: number;
+  skipMissedJobs: boolean;
+  openClawSessionPolicy: OpenClawSessionPolicyConfig;
 }
 
 type CoworkConfigUpdate = Partial<Pick<
@@ -71,6 +76,7 @@ type CoworkConfigUpdate = Partial<Pick<
   | 'memoryLlmJudgeEnabled'
   | 'memoryGuardLevel'
   | 'memoryUserMemoriesMaxItems'
+  | 'skipMissedJobs'
 >>;
 
 interface CoworkUserMemoryEntry {
@@ -116,6 +122,10 @@ interface OpenClawEngineStatus {
   progressPercent?: number;
   message?: string;
   canRetry: boolean;
+}
+
+interface OpenClawSessionPolicyConfig {
+  keepAlive: '1d' | '7d' | '30d' | '365d';
 }
 
 interface AppUpdateDownloadProgress {
@@ -216,8 +226,9 @@ interface McpMarketplaceData {
   servers: McpMarketplaceServer[];
 }
 
-import type { Agent, PresetAgent } from './agent';
 import type { Platform } from '@shared/platform';
+
+import type { Agent, PresetAgent } from './agent';
 
 interface CreditItem {
   type: 'subscription' | 'boost' | 'free';
@@ -268,6 +279,8 @@ interface IElectronAPI {
     setEnabled: (options: { id: string; enabled: boolean }) => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
     fetchMarketplace: () => Promise<{ success: boolean; data?: McpMarketplaceData; error?: string }>;
     refreshBridge: () => Promise<{ success: boolean; tools: number; error?: string }>;
+    onBridgeSyncStart: (callback: () => void) => () => void;
+    onBridgeSyncDone: (callback: (data: { tools: number; error?: string }) => void) => () => void;
   };
   agents: {
     list: () => Promise<Agent[]>;
@@ -311,6 +324,16 @@ interface IElectronAPI {
       restartGateway: () => Promise<{ success: boolean; status?: OpenClawEngineStatus; error?: string }>;
       onProgress: (callback: (status: OpenClawEngineStatus) => void) => () => void;
     };
+    sessionPolicy: {
+      get: () => Promise<{ success: boolean; config?: OpenClawSessionPolicyConfig; error?: string }>;
+      set: (config: OpenClawSessionPolicyConfig) => Promise<{ success: boolean; config?: OpenClawSessionPolicyConfig; error?: string }>;
+    };
+    session: {
+      patch: (options: {
+        sessionId: string;
+        patch: OpenClawSessionPatch;
+      }) => Promise<{ success: boolean; session?: CoworkSession; error?: string }>;
+    };
   };
   ipcRenderer: {
     send: (channel: string, ...args: any[]) => void;
@@ -345,6 +368,11 @@ interface IElectronAPI {
     saveResultImage: (options: {
       pngBase64: string;
       defaultFileName?: string;
+    }) => Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
+    exportSessionText: (options: {
+      content: string;
+      defaultFileName?: string;
+      fileExtension?: string;
     }) => Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
     respondToPermission: (options: { requestId: string; result: CoworkPermissionResult }) => Promise<{ success: boolean; error?: string }>;
     getConfig: () => Promise<{ success: boolean; config?: CoworkConfig; error?: string }>;
@@ -429,6 +457,11 @@ interface IElectronAPI {
     getOpenClawConfigSchema: () => Promise<{ success: boolean; result?: { schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> }; error?: string }>;
     weixinQrLoginStart: () => Promise<{ success: boolean; qrDataUrl?: string; message: string; sessionKey?: string }>;
     weixinQrLoginWait: (accountId?: string) => Promise<{ success: boolean; connected: boolean; message: string; accountId?: string }>;
+
+    // POPO QR login
+    popoQrLoginStart: () => Promise<{ success: boolean; qrUrl?: string; taskToken?: string; timeoutMs?: number; message?: string }>;
+    popoQrLoginPoll: (taskToken: string) => Promise<{ success: boolean; appKey?: string; appSecret?: string; aesKey?: string; message: string }>;
+
     listPairingRequests: (platform: string) => Promise<{
       success: boolean;
       requests: Array<{ id: string; code: string; createdAt: string; lastSeenAt: string; meta?: Record<string, string> }>;
@@ -437,6 +470,18 @@ interface IElectronAPI {
     }>;
     approvePairingCode: (platform: string, code: string) => Promise<{ success: boolean; error?: string }>;
     rejectPairingRequest: (platform: string, code: string) => Promise<{ success: boolean; error?: string }>;
+    addQQInstance: (name: string) => Promise<{ success: boolean; instance?: QQInstanceConfig; error?: string }>;
+    deleteQQInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setQQInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
+    addFeishuInstance: (name: string) => Promise<{ success: boolean; instance?: FeishuInstanceConfig; error?: string }>;
+    deleteFeishuInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setFeishuInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
+    addDingTalkInstance: (name: string) => Promise<{ success: boolean; instance?: DingTalkInstanceConfig; error?: string }>;
+    deleteDingTalkInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setDingTalkInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
+    addWecomInstance: (name: string) => Promise<{ success: boolean; instance?: WecomInstanceConfig; error?: string }>;
+    deleteWecomInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setWecomInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
     onStatusChange: (callback: (status: IMGatewayStatus) => void) => () => void;
     onMessageReceived: (callback: (message: IMMessage) => void) => () => void;
   };
@@ -462,7 +507,7 @@ interface IElectronAPI {
       channels?: import('../../scheduledTask/types').ScheduledTaskChannelOption[];
       error?: string;
     }>;
-    listChannelConversations?: (channel: string) => Promise<{
+    listChannelConversations?: (channel: string, accountId?: string) => Promise<{
       success: boolean;
       conversations?: import('../../scheduledTask/types').ScheduledTaskConversationOption[];
       error?: string;
@@ -494,6 +539,17 @@ interface IElectronAPI {
   networkStatus: {
     send: (status: 'online' | 'offline') => void;
   };
+  auth: {
+    login: (loginUrl?: string) => Promise<{ success: boolean; error?: string }>;
+    exchange: (code: string) => Promise<{ success: boolean; user?: { userId: string; phone: string; nickname: string; avatarUrl: string }; quota?: { planName: string; subscriptionStatus: string; creditsLimit: number; creditsUsed: number; creditsRemaining: number }; error?: string }>;
+    getUser: () => Promise<{ success: boolean; user?: { userId: string; phone: string; nickname: string; avatarUrl: string }; quota?: { planName: string; subscriptionStatus: string; creditsLimit: number; creditsUsed: number; creditsRemaining: number } }>;
+    getQuota: () => Promise<{ success: boolean; quota?: { planName: string; subscriptionStatus: string; creditsLimit: number; creditsUsed: number; creditsRemaining: number } }>;
+    logout: () => Promise<{ success: boolean }>;
+    refreshToken: () => Promise<{ success: boolean; accessToken?: string }>;
+    getAccessToken: () => Promise<string | null>;
+    onCallback: (callback: (data: { code: string }) => void) => () => void;
+  };
+  qwen: Record<string, never>;
   feishu: {
     install: {
       qrcode: (isLark: boolean) => Promise<{
@@ -515,18 +571,43 @@ interface IElectronAPI {
       }>;
     };
   };
+  githubCopilot: {
+    requestDeviceCode: () => Promise<{
+      userCode: string;
+      verificationUri: string;
+      deviceCode: string;
+      interval: number;
+      expiresIn: number;
+    }>;
+    pollForToken: (deviceCode: string, interval: number, expiresIn: number) => Promise<{
+      success: boolean;
+      token?: string;
+      githubUser?: string;
+      baseUrl?: string;
+      error?: string;
+    }>;
+    cancelPolling: () => Promise<void>;
+    signOut: () => Promise<void>;
+    refreshToken: () => Promise<{
+      success: boolean;
+      token?: string;
+      baseUrl?: string;
+      error?: string;
+    }>;
+    onTokenUpdated: (callback: (data: { token: string; baseUrl: string }) => void) => () => void;
+  };
 }
 
 // IM Gateway types
 interface IMGatewayConfig {
-  dingtalk: DingTalkOpenClawConfig;
-  feishu: FeishuOpenClawConfig;
+  dingtalk: DingTalkMultiInstanceConfig;
+  feishu: FeishuMultiInstanceConfig;
   telegram: TelegramOpenClawConfig;
-  qq: QQConfig;
+  qq: QQMultiInstanceConfig;
   discord: DiscordOpenClawConfig;
   nim: NimConfig;
   'netease-bee': NeteaseBeeChanConfig;
-  wecom: WecomConfig;
+  wecom: WecomMultiInstanceConfig;
   popo: PopoOpenClawConfig;
   weixin: WeixinOpenClawConfig;
   settings: IMSettings;
@@ -547,10 +628,39 @@ interface DingTalkOpenClawConfig {
   debug: boolean;
 }
 
+interface DingTalkInstanceConfig extends DingTalkOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface DingTalkInstanceStatus extends DingTalkGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface DingTalkMultiInstanceConfig {
+  instances: DingTalkInstanceConfig[];
+}
+
+interface DingTalkMultiInstanceStatus {
+  instances: DingTalkInstanceStatus[];
+}
+
 interface FeishuOpenClawGroupConfig {
   requireMention?: boolean;
   allowFrom?: string[];
   systemPrompt?: string;
+}
+
+interface FeishuOpenClawFooterConfig {
+  status?: boolean;
+  elapsed?: boolean;
+}
+
+interface FeishuOpenClawBlockStreamingCoalesceConfig {
+  minChars?: number;
+  maxChars?: number;
+  idleMs?: number;
 }
 
 interface FeishuOpenClawConfig {
@@ -564,9 +674,31 @@ interface FeishuOpenClawConfig {
   groupAllowFrom: string[];
   groups: Record<string, FeishuOpenClawGroupConfig>;
   historyLimit: number;
+  streaming: boolean;
   replyMode: 'auto' | 'static' | 'streaming';
+  blockStreaming: boolean;
+  footer: FeishuOpenClawFooterConfig;
+  blockStreamingCoalesce?: FeishuOpenClawBlockStreamingCoalesceConfig;
   mediaMaxMb: number;
   debug: boolean;
+}
+
+interface FeishuInstanceConfig extends FeishuOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface FeishuInstanceStatus extends FeishuGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface FeishuMultiInstanceConfig {
+  instances: FeishuInstanceConfig[];
+}
+
+interface FeishuMultiInstanceStatus {
+  instances: FeishuInstanceStatus[];
 }
 
 interface TelegramOpenClawGroupConfig {
@@ -668,6 +800,24 @@ interface QQConfig {
   debug: boolean;
 }
 
+interface QQInstanceConfig extends QQConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface QQMultiInstanceConfig {
+  instances: QQInstanceConfig[];
+}
+
+interface QQInstanceStatus extends QQGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface QQMultiInstanceStatus {
+  instances: QQInstanceStatus[];
+}
+
 interface WecomConfig {
   enabled: boolean;
   botId: string;
@@ -678,6 +828,24 @@ interface WecomConfig {
   groupAllowFrom: string[];
   sendThinkingMessage: boolean;
   debug: boolean;
+}
+
+interface WecomInstanceConfig extends WecomConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface WecomMultiInstanceConfig {
+  instances: WecomInstanceConfig[];
+}
+
+interface WecomInstanceStatus extends WecomGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface WecomMultiInstanceStatus {
+  instances: WecomInstanceStatus[];
 }
 
 interface PopoOpenClawConfig {
@@ -715,14 +883,14 @@ interface IMSettings {
 }
 
 interface IMGatewayStatus {
-  dingtalk: DingTalkGatewayStatus;
-  feishu: FeishuGatewayStatus;
-  qq: QQGatewayStatus;
+  dingtalk: DingTalkMultiInstanceStatus;
+  feishu: FeishuMultiInstanceStatus;
+  qq: QQMultiInstanceStatus;
   telegram: TelegramGatewayStatus;
   discord: DiscordGatewayStatus;
   nim: NimGatewayStatus;
   'netease-bee': NeteaseBeeChanGatewayStatus;
-  wecom: WecomGatewayStatus;
+  wecom: WecomMultiInstanceStatus;
   popo: PopoGatewayStatus;
   weixin: WeixinGatewayStatus;
 }

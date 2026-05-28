@@ -1,15 +1,12 @@
+import { type ApiFormat,ProviderRegistry } from '@shared/providers';
+
 import { AppConfig, CONFIG_KEYS, defaultConfig, isCustomProvider } from '../config';
 import { localStore } from './store';
 
-const getFixedProviderApiFormat = (providerKey: string): 'anthropic' | 'openai' | 'gemini' | null => {
-  if (providerKey === 'openai' || providerKey === 'stepfun' || providerKey === 'youdaozhiyun') {
-    return 'openai';
-  }
-  if (providerKey === 'anthropic') {
-    return 'anthropic';
-  }
-  if (providerKey === 'gemini') {
-    return 'gemini';
+const getFixedProviderApiFormat = (providerKey: string): ApiFormat | null => {
+  const def = ProviderRegistry.get(providerKey);
+  if (def && !def.switchableBaseUrls) {
+    return def.defaultApiFormat;
   }
   return null;
 };
@@ -84,7 +81,7 @@ const migrateCustomProviders = (config: AppConfig): AppConfig => {
   if ('custom' in providers && !isCustomProvider('custom')) {
     const legacyCustom = providers['custom'];
     if (legacyCustom) {
-      const updatedProviders = { ...providers };
+      const updatedProviders = { ...providers } as Record<string, any>;
       updatedProviders['custom_0'] = { ...legacyCustom };
       delete updatedProviders['custom'];
       return {
@@ -222,6 +219,7 @@ class ConfigService {
       ...(normalizedProviders ? { providers: normalizedProviders } : {}),
     };
     await localStore.setItem(CONFIG_KEYS.APP_CONFIG, this.config);
+    window.dispatchEvent(new CustomEvent('config-updated'));
   }
 
   getApiConfig() {

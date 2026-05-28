@@ -132,7 +132,7 @@
           "!**/tsconfig.*.json",
           "!**/*.test.*",
           "!**/*.spec.*",
-                "!**/tests/**",
+          "!**/tests/**",
           "!**/test/**",
           "!**/__tests__/**"
         ]
@@ -225,7 +225,7 @@
           "!**/tsconfig.*.json",
           "!**/*.test.*",
           "!**/*.spec.*",
-                "!**/tests/**",
+          "!**/tests/**",
           "!**/test/**",
           "!**/__tests__/**"
         ]
@@ -246,9 +246,8 @@
   },
   "electronVersion": "40.2.1",
   "asarUnpack": [
-    "node_modules/@anthropic-ai/claude-agent-sdk/**",
     "node_modules/@img/**",
-    "node_modules/sql.js/dist/**",
+    "node_modules/better-sqlite3/**",
     "node_modules/node-nim/**",
     "node_modules/npm/**"
   ],

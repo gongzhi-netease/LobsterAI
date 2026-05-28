@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, store } from './store';
+import {
+  selectCurrentSessionId,
+  selectFirstPendingPermission,
+} from './store/selectors/coworkSelectors';
 import Settings, { type SettingsOpenOptions } from './components/Settings';
 import Sidebar from './components/Sidebar';
 import Toast from './components/Toast';
@@ -23,6 +27,7 @@ import { checkForAppUpdate, type AppUpdateInfo, type AppUpdateDownloadProgress, 
 import { defaultConfig, getProviderDisplayName } from './config';
 import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
+import { setDraftPrompt } from './store/slices/coworkSlice';
 import type { ApiConfig } from './services/api';
 import type { CoworkPermissionResult } from './types/cowork';
 import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
@@ -55,9 +60,8 @@ const App: React.FC = () => {
   const hasInitialized = useRef(false);
   const dispatch = useDispatch();
   const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
-  const currentSessionId = useSelector((state: RootState) => state.cowork.currentSessionId);
-  const pendingPermissions = useSelector((state: RootState) => state.cowork.pendingPermissions);
-  const pendingPermission = pendingPermissions[0] ?? null;
+  const currentSessionId = useSelector(selectCurrentSessionId);
+  const pendingPermission = useSelector(selectFirstPendingPermission);
   const isWindows = window.electron.platform === 'win32';
 
   const waitWithTimeout = useCallback(
@@ -117,7 +121,6 @@ const App: React.FC = () => {
 
         console.info('[App] initializeApp: configService.getConfig');
         const config = await configService.getConfig();
-        
         const apiConfig: ApiConfig = {
           apiKey: config.api.key,
           baseUrl: config.api.baseUrl,
@@ -167,6 +170,7 @@ const App: React.FC = () => {
         setIsInitialized(true);
         console.info('[App] initializeApp: shell ready');
 
+
         // 初始化定时任务服务，但不阻塞首屏
         void waitWithTimeout(scheduledTaskService.init(), 5000, 'scheduledTaskService.init').catch((error) => {
           console.error('[App] initializeApp: scheduledTaskService.init failed:', error);
@@ -189,6 +193,28 @@ const App: React.FC = () => {
     return () => {
       unsubscribe();
     };
+  }, []);
+
+  // Listen for Copilot token auto-refresh events from the main process
+  useEffect(() => {
+    const removeListener = window.electron.githubCopilot.onTokenUpdated(({ token, baseUrl }) => {
+      console.log('[App] received Copilot token update from main process');
+      const currentConfig = configService.getConfig();
+      const copilotProvider = currentConfig.providers?.['github-copilot'];
+      if (copilotProvider) {
+        void configService.updateConfig({
+          providers: {
+            ...currentConfig.providers,
+            'github-copilot': {
+              ...copilotProvider,
+              apiKey: token,
+              ...(baseUrl ? { baseUrl } : {}),
+            },
+          },
+        } as Partial<typeof currentConfig>);
+      }
+    });
+    return removeListener;
   }, []);
 
   // Network status monitoring
@@ -273,6 +299,13 @@ const App: React.FC = () => {
       }));
     }, 0);
   }, [dispatch, mainView, currentSessionId]);
+
+  const handleCreateSkillByChat = useCallback(() => {
+    dispatch(setDraftPrompt({ sessionId: '__home__', draft: i18nService.t('skillCreatorPrompt') }));
+    coworkService.clearSession();
+    dispatch(clearSelection());
+    setMainView('cowork');
+  }, [dispatch]);
 
   const showToast = useCallback((message: string) => {
     setToastMessage(message);
@@ -577,7 +610,7 @@ const App: React.FC = () => {
     );
   }, [pendingPermission, handlePermissionResponse]);
 
-  const isOverlayActive = showSettings || showUpdateModal || pendingPermissions.length > 0;
+  const isOverlayActive = showSettings || showUpdateModal || pendingPermission !== null;
   const updateBadge = updateInfo ? (
     <AppUpdateBadge
       latestVersion={updateInfo.latestVersion}
@@ -669,6 +702,7 @@ const App: React.FC = () => {
                 isSidebarCollapsed={isSidebarCollapsed}
                 onToggleSidebar={handleToggleSidebar}
                 onNewChat={handleNewChat}
+                onCreateSkillByChat={handleCreateSkillByChat}
                 updateBadge={isSidebarCollapsed ? updateBadge : null}
                 readOnly={enterpriseConfig?.ui?.skills === 'readonly'}
               />

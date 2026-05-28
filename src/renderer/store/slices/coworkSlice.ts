@@ -1,12 +1,14 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+
 import type {
-  CoworkSession,
-  CoworkSessionSummary,
-  CoworkMessage,
   CoworkConfig,
+  CoworkMessage,
   CoworkPermissionRequest,
+  CoworkSession,
   CoworkSessionStatus,
+  CoworkSessionSummary,
 } from '../../types/cowork';
+import { removeSessionFromState, removeSessionsFromState } from './coworkDeleteState';
 
 export interface DraftAttachment {
   path: string;
@@ -51,6 +53,10 @@ const initialState: CoworkState = {
     memoryLlmJudgeEnabled: false,
     memoryGuardLevel: 'strict',
     memoryUserMemoriesMaxItems: 12,
+    skipMissedJobs: true,
+    openClawSessionPolicy: {
+      keepAlive: '30d',
+    },
   },
 };
 
@@ -63,45 +69,6 @@ const markSessionUnread = (state: CoworkState, sessionId: string) => {
   if (state.currentSessionId === sessionId) return;
   if (state.unreadSessionIds.includes(sessionId)) return;
   state.unreadSessionIds.push(sessionId);
-};
-
-const STREAMING_MERGE_PROBE_CHARS = 512;
-
-const computeStreamingSuffixPrefixOverlap = (left: string, right: string): number => {
-  const leftProbe = left.slice(-STREAMING_MERGE_PROBE_CHARS);
-  const rightProbe = right.slice(0, STREAMING_MERGE_PROBE_CHARS);
-  const maxOverlap = Math.min(leftProbe.length, rightProbe.length);
-  for (let size = maxOverlap; size > 0; size -= 1) {
-    if (leftProbe.slice(-size) === rightProbe.slice(0, size)) {
-      return size;
-    }
-  }
-  return 0;
-};
-
-const mergeStreamingMessageContent = (previousContent: string, incomingContent: string): string => {
-  if (!incomingContent) return previousContent;
-  if (!previousContent) return incomingContent;
-  if (incomingContent === previousContent) return previousContent;
-
-  // Snapshot mode: upstream sends full content each update.
-  if (incomingContent.startsWith(previousContent)) {
-    return incomingContent;
-  }
-
-  // Guard against temporary partial rollback chunks.
-  if (previousContent.startsWith(incomingContent)) {
-    return previousContent;
-  }
-
-  // Another snapshot pattern where previous content is fully contained.
-  if (incomingContent.includes(previousContent) && incomingContent.length > previousContent.length) {
-    return incomingContent;
-  }
-
-  // Delta mode: append the non-overlapping tail.
-  const overlap = computeStreamingSuffixPrefixOverlap(previousContent, incomingContent);
-  return previousContent + incomingContent.slice(overlap);
 };
 
 const coworkSlice = createSlice({
@@ -197,25 +164,11 @@ const coworkSlice = createSlice({
     },
 
     deleteSession(state, action: PayloadAction<string>) {
-      const sessionId = action.payload;
-      state.sessions = state.sessions.filter(s => s.id !== sessionId);
-      state.unreadSessionIds = state.unreadSessionIds.filter((id) => id !== sessionId);
-
-      if (state.currentSessionId === sessionId) {
-        state.currentSessionId = null;
-        state.currentSession = null;
-      }
+      removeSessionFromState(state, action.payload);
     },
 
     deleteSessions(state, action: PayloadAction<string[]>) {
-      const sessionIds = new Set(action.payload);
-      state.sessions = state.sessions.filter(s => !sessionIds.has(s.id));
-      state.unreadSessionIds = state.unreadSessionIds.filter((id) => !sessionIds.has(id));
-
-      if (state.currentSessionId && sessionIds.has(state.currentSessionId)) {
-        state.currentSessionId = null;
-        state.currentSession = null;
-      }
+      removeSessionsFromState(state, action.payload);
     },
 
     addMessage(state, action: PayloadAction<{ sessionId: string; message: CoworkMessage }>) {
@@ -244,12 +197,7 @@ const coworkSlice = createSlice({
       if (state.currentSession?.id === sessionId) {
         const messageIndex = state.currentSession.messages.findIndex(m => m.id === messageId);
         if (messageIndex !== -1) {
-          const previousContent = state.currentSession.messages[messageIndex].content || '';
-          if (state.config.agentEngine === 'yd_cowork') {
-            state.currentSession.messages[messageIndex].content = mergeStreamingMessageContent(previousContent, content);
-          } else {
-            state.currentSession.messages[messageIndex].content = content;
-          }
+          state.currentSession.messages[messageIndex].content = content;
         }
       }
 
@@ -335,6 +283,13 @@ const coworkSlice = createSlice({
       }
     },
 
+    addDraftAttachment(state, action: PayloadAction<{ draftKey: string; attachment: DraftAttachment }>) {
+      const { draftKey, attachment } = action.payload;
+      const existing = state.draftAttachments[draftKey] || [];
+      if (existing.some(a => a.path === attachment.path)) return;
+      state.draftAttachments[draftKey] = [...existing, attachment];
+    },
+
     clearDraftAttachments(state, action: PayloadAction<string>) {
       delete state.draftAttachments[action.payload];
     },
@@ -348,6 +303,7 @@ export const {
   setCurrentSession,
   setDraftPrompt,
   setDraftAttachments,
+  addDraftAttachment,
   clearDraftAttachments,
   addSession,
   updateSessionStatus,

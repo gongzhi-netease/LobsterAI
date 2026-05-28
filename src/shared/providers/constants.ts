@@ -32,6 +32,7 @@ export const ProviderName = {
   Minimax: 'minimax',
   Youdaozhiyun: 'youdaozhiyun',
   Qwen: 'qwen',
+  Qianfan: 'qianfan',
   Xiaomi: 'xiaomi',
   StepFun: 'stepfun',
   Volcengine: 'volcengine',
@@ -39,6 +40,7 @@ export const ProviderName = {
   Ollama: 'ollama',
   Custom: 'custom',
   LobsteraiServer: 'lobsterai-server',
+  Copilot: 'github-copilot',
 } as const;
 export type ProviderName = typeof ProviderName[keyof typeof ProviderName];
 
@@ -46,23 +48,24 @@ export type ProviderName = typeof ProviderName[keyof typeof ProviderName];
 // OpenClaw gateway provider identifiers. May differ from ProviderName.
 export const OpenClawProviderId = {
   LobsteraiServer: 'lobsterai-server',
-  KimiCoding: 'kimi-coding',
   Moonshot: 'moonshot',
   Google: 'google',
   Anthropic: 'anthropic',
   OpenAI: 'openai',
   DeepSeek: 'deepseek',
+  Qianfan: 'qianfan',
   Qwen: 'qwen-portal', // OpenClaw normalizes 'qwen' → 'qwen-portal'; use canonical ID to avoid config diff loop
   Zai: 'zai', // OpenClaw official provider ID for Zhipu/GLM
   Volcengine: 'volcengine',
-  VolcenginePlan: 'volcengine-plan', // OpenClaw coding plan provider for Volcengine
   Minimax: 'minimax',
   Youdaozhiyun: 'youdaozhiyun',
   StepFun: 'stepfun',
   Xiaomi: 'xiaomi',
   OpenRouter: 'openrouter',
+  Copilot: 'github-copilot',
+  LobsteraiCopilot: 'lobsterai-copilot',
   Ollama: 'ollama',
-  Lobster: 'lobster', // Fallback ID for unknown providers
+  Lobster: 'lobster',
 } as const;
 export type OpenClawProviderId = typeof OpenClawProviderId[keyof typeof OpenClawProviderId];
 
@@ -86,6 +89,7 @@ export type ApiFormat = typeof ApiFormat[keyof typeof ApiFormat];
 // ─── Auth Type ──────────────────────────────────────────────────────────
 export const AuthType = {
   ApiKey: 'api-key',
+  OAuth: 'oauth',
 } as const;
 export type AuthType = typeof AuthType[keyof typeof AuthType];
 
@@ -96,6 +100,12 @@ export type AuthType = typeof AuthType[keyof typeof AuthType];
 interface ProviderDefInput {
   /** Provider identifier (e.g. 'openai', 'moonshot') */
   readonly id: string;
+  /** Human-readable display name shown in UI, e.g. 'OpenAI', 'GitHub Copilot' */
+  readonly label: string;
+  /** Provider console / product website URL */
+  readonly website?: string;
+  /** API key creation page URL. Omit for providers that don't use API keys (e.g. Ollama). */
+  readonly apiKeyUrl?: string;
   /** Default base URL */
   readonly defaultBaseUrl: string;
   /** Default API format */
@@ -136,6 +146,24 @@ interface ProviderDefInput {
     readonly name: string;
     readonly supportsImage: boolean;
   }[];
+  /**
+   * Coding Plan dedicated model list (only meaningful when codingPlanSupported=true).
+   * When the user toggles codingPlanEnabled in Settings, the model list is replaced
+   * with this list. When unset, coding plan mode keeps the same models as defaultModels.
+   */
+  readonly codingPlanModels?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly supportsImage: boolean;
+  }[];
+  /**
+   * The OpenClaw gateway provider ID used when building model refs (e.g. "provider/modelId").
+   * Most providers share the same value as `id`, but some differ
+   * (e.g. zhipu → zai, gemini → google).
+   * Used by renderer to construct scheduled-task model references without
+   * importing main-process-only openclawConfigSync.
+   */
+  readonly openClawProviderId: OpenClawProviderId;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -148,6 +176,10 @@ const PROVIDER_DEFINITIONS = [
   // ── China ──
   {
     id: ProviderName.DeepSeek,
+    label: 'DeepSeek',
+    website: 'https://platform.deepseek.com',
+    apiKeyUrl: 'https://platform.deepseek.com/api_keys',
+    openClawProviderId: OpenClawProviderId.DeepSeek,
     defaultBaseUrl: 'https://api.deepseek.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -157,31 +189,40 @@ const PROVIDER_DEFINITIONS = [
     },
     region: 'china',
     enPriority: 0,
-    defaultModels: [
-      { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', supportsImage: false },
-    ],
+    defaultModels: [{ id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', supportsImage: false }],
   },
   {
     id: ProviderName.Moonshot,
-    defaultBaseUrl: 'https://api.moonshot.cn/anthropic',
-    defaultApiFormat: ApiFormat.Anthropic,
+    label: 'Moonshot',
+    website: 'https://platform.moonshot.cn',
+    apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys',
+    openClawProviderId: OpenClawProviderId.Moonshot,
+    // Moonshot's /anthropic endpoint does not fully implement the Anthropic Messages spec
+    // (no tool use, incomplete streaming, etc.). API connectivity tests pass, but actual
+    // cowork sessions fail to send/receive messages. Force OpenAI-compatible format instead.
+    defaultBaseUrl: 'https://api.moonshot.cn/v1',
+    defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: true,
     codingPlanUrls: {
       openai: 'https://api.kimi.com/coding/v1',
       anthropic: 'https://api.kimi.com/coding',
     },
+    preferredCodingPlanFormat: 'anthropic',
     switchableBaseUrls: {
       anthropic: 'https://api.moonshot.cn/anthropic',
       openai: 'https://api.moonshot.cn/v1',
     },
     region: 'china',
     enPriority: 0,
-    defaultModels: [
-      { id: 'kimi-k2.5', name: 'Kimi K2.5', supportsImage: true },
-    ],
+    defaultModels: [{ id: 'kimi-k2.5', name: 'Kimi K2.5', supportsImage: true }],
+    codingPlanModels: [{ id: 'kimi-for-coding', name: 'Kimi K2.5', supportsImage: true }],
   },
   {
     id: ProviderName.Qwen,
+    label: 'Qwen',
+    website: 'https://dashscope.console.aliyun.com',
+    apiKeyUrl: 'https://dashscope.console.aliyun.com/apiKey',
+    openClawProviderId: OpenClawProviderId.Qwen,
     defaultBaseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
@@ -189,6 +230,7 @@ const PROVIDER_DEFINITIONS = [
       openai: 'https://coding.dashscope.aliyuncs.com/v1',
       anthropic: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
     },
+    preferredCodingPlanFormat: 'openai',
     switchableBaseUrls: {
       anthropic: 'https://dashscope.aliyuncs.com/apps/anthropic',
       openai: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
@@ -202,6 +244,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Zhipu,
+    label: 'Zhipu',
+    website: 'https://open.bigmodel.cn',
+    apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
+    openClawProviderId: OpenClawProviderId.Zai,
     defaultBaseUrl: 'https://open.bigmodel.cn/api/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
@@ -223,6 +269,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Minimax,
+    label: 'MiniMax',
+    website: 'https://platform.minimaxi.com',
+    apiKeyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+    openClawProviderId: OpenClawProviderId.Minimax,
     defaultBaseUrl: 'https://api.minimaxi.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -239,6 +289,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Volcengine,
+    label: 'Volcengine',
+    website: 'https://console.volcengine.com/ark',
+    apiKeyUrl: 'https://console.volcengine.com/ark',
+    openClawProviderId: OpenClawProviderId.Volcengine,
     defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/compatible',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
@@ -261,6 +315,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Youdaozhiyun,
+    label: 'Youdao',
+    website: 'https://ai.youdao.com',
+    apiKeyUrl: 'https://ai.youdao.com/console',
+    openClawProviderId: OpenClawProviderId.Youdaozhiyun,
     defaultBaseUrl: 'https://openapi.youdao.com/llmgateway/api/v1/chat/completions',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
@@ -270,22 +328,49 @@ const PROVIDER_DEFINITIONS = [
       { id: 'deepseek-chat', name: 'DeepSeek Chat', supportsImage: false },
       { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', supportsImage: false },
       { id: 'deepseek-inhouse-chat', name: 'DeepSeek Chat (\u5b89\u5168)', supportsImage: false },
-      { id: 'deepseek-inhouse-reasoner', name: 'DeepSeek Reasoner (\u5b89\u5168)', supportsImage: false },
+      {
+        id: 'deepseek-inhouse-reasoner',
+        name: 'DeepSeek Reasoner (\u5b89\u5168)',
+        supportsImage: false,
+      },
     ],
   },
   {
-    id: ProviderName.StepFun,
-    defaultBaseUrl: 'https://api.stepfun.com/v1',
+    id: ProviderName.Qianfan,
+    label: 'Qianfan',
+    apiKeyUrl: 'https://console.bce.baidu.com/qianfan/ais/console/apiKey',
+    openClawProviderId: OpenClawProviderId.Qianfan,
+    defaultBaseUrl: 'https://qianfan.baidubce.com/v2',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
     region: 'china',
     enPriority: 0,
     defaultModels: [
-      { id: 'step-3.5-flash', name: 'Step 3.5 Flash', supportsImage: false },
+      { id: 'deepseek-v3.2', name: 'DeepSeek V3.2', supportsImage: false },
+      { id: 'deepseek-r1', name: 'DeepSeek R1', supportsImage: false },
+      { id: 'ernie-4.5-8k', name: 'ERNIE 4.5 8K', supportsImage: false },
+      { id: 'ernie-4.5-turbo-8k', name: 'ERNIE 4.5 Turbo', supportsImage: false },
     ],
   },
   {
+    id: ProviderName.StepFun,
+    label: 'StepFun',
+    website: 'https://platform.stepfun.com',
+    apiKeyUrl: 'https://platform.stepfun.com/interface-key',
+    openClawProviderId: OpenClawProviderId.StepFun,
+    defaultBaseUrl: 'https://api.stepfun.com/v1',
+    defaultApiFormat: ApiFormat.OpenAI,
+    codingPlanSupported: false,
+    region: 'china',
+    enPriority: 0,
+    defaultModels: [{ id: 'step-3.5-flash', name: 'Step 3.5 Flash', supportsImage: false }],
+  },
+  {
     id: ProviderName.Xiaomi,
+    label: 'Xiaomi',
+    website: 'https://dev.mi.com/platform',
+    apiKeyUrl: 'https://dev.mi.com/platform',
+    openClawProviderId: OpenClawProviderId.Xiaomi,
     defaultBaseUrl: 'https://api.xiaomimimo.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -295,12 +380,13 @@ const PROVIDER_DEFINITIONS = [
     },
     region: 'china',
     enPriority: 0,
-    defaultModels: [
-      { id: 'mimo-v2-flash', name: 'MiMo V2 Flash', supportsImage: false },
-    ],
+    defaultModels: [{ id: 'mimo-v2-flash', name: 'MiMo V2 Flash', supportsImage: false }],
   },
   {
     id: ProviderName.Ollama,
+    label: 'Ollama',
+    website: 'https://ollama.com',
+    openClawProviderId: OpenClawProviderId.Ollama,
     defaultBaseUrl: 'http://localhost:11434/v1',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
@@ -317,7 +403,27 @@ const PROVIDER_DEFINITIONS = [
   },
   // ── Global ──
   {
+    id: ProviderName.Copilot,
+    label: 'GitHub Copilot',
+    openClawProviderId: OpenClawProviderId.LobsteraiCopilot,
+    defaultBaseUrl: 'https://api.individual.githubcopilot.com',
+    defaultApiFormat: ApiFormat.OpenAI,
+    codingPlanSupported: false,
+    region: 'global',
+    enPriority: 0,
+    defaultModels: [
+      { id: 'gpt-5-mini', name: 'GPT-5 mini', supportsImage: true },
+      { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', supportsImage: true },
+      { id: 'gpt-4.1', name: 'GPT-4.1', supportsImage: true },
+      { id: 'gpt-4o', name: 'GPT-4o', supportsImage: true },
+    ],
+  },
+  {
     id: ProviderName.OpenAI,
+    label: 'OpenAI',
+    website: 'https://platform.openai.com',
+    apiKeyUrl: 'https://platform.openai.com/api-keys',
+    openClawProviderId: OpenClawProviderId.OpenAI,
     defaultBaseUrl: 'https://api.openai.com/v1',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
@@ -332,6 +438,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Gemini,
+    label: 'Gemini',
+    website: 'https://aistudio.google.com',
+    apiKeyUrl: 'https://aistudio.google.com/apikey',
+    openClawProviderId: OpenClawProviderId.Google,
     defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     defaultApiFormat: ApiFormat.Gemini,
     codingPlanSupported: false,
@@ -345,6 +455,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Anthropic,
+    label: 'Anthropic',
+    website: 'https://console.anthropic.com',
+    apiKeyUrl: 'https://console.anthropic.com/settings/keys',
+    openClawProviderId: OpenClawProviderId.Anthropic,
     defaultBaseUrl: 'https://api.anthropic.com',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -358,6 +472,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.OpenRouter,
+    label: 'OpenRouter',
+    website: 'https://openrouter.ai',
+    apiKeyUrl: 'https://openrouter.ai/keys',
+    openClawProviderId: OpenClawProviderId.OpenRouter,
     defaultBaseUrl: 'https://openrouter.ai/api',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -383,6 +501,12 @@ const PROVIDER_DEFINITIONS = [
 export interface ProviderDef {
   /** Provider identifier (e.g. 'openai', 'moonshot') */
   readonly id: string;
+  /** Human-readable display name shown in UI */
+  readonly label: string;
+  /** Provider console / product website URL */
+  readonly website?: string;
+  /** API key creation page URL */
+  readonly apiKeyUrl?: string;
   /** Default base URL */
   readonly defaultBaseUrl: string;
   /** Default API format */
@@ -411,6 +535,12 @@ export interface ProviderDef {
     readonly name: string;
     readonly supportsImage: boolean;
   }[];
+  readonly codingPlanModels?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly supportsImage: boolean;
+  }[];
+  readonly openClawProviderId: OpenClawProviderId;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -458,6 +588,10 @@ class ProviderRegistryImpl {
 
   getSwitchableBaseUrl(id: string, format: 'openai' | 'anthropic'): string | undefined {
     return this.idIndex.get(id)?.switchableBaseUrls?.[format];
+  }
+
+  getOpenClawProviderId(providerName: string): string {
+    return this.idIndex.get(providerName)?.openClawProviderId ?? providerName ?? OpenClawProviderId.Lobster;
   }
 
   /** Provider IDs filtered by region. */

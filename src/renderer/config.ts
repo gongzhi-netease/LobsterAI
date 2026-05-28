@@ -1,4 +1,4 @@
-import { ProviderRegistry } from '@shared/providers';
+import { type ProviderConfig,ProviderRegistry } from '@shared/providers';
 
 // 配置类型定义
 export interface AppConfig {
@@ -7,8 +7,6 @@ export interface AppConfig {
     key: string;
     baseUrl: string;
   };
-  // 自定义模型提供商递增 ID 计数器（单调递增，删除后不复用）
-  customProviderNextId?: number;
   // 模型配置
   model: {
     availableModels: Array<{
@@ -19,194 +17,7 @@ export interface AppConfig {
     defaultModel: string;
     defaultModelProvider?: string;
   };
-  // 多模型提供商配置
-  providers?: {
-    openai: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      // API 协议格式：anthropic 为 Anthropic 兼容，openai 为 OpenAI 兼容
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    deepseek: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    moonshot: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** 是否启用 Moonshot Coding Plan 模式（使用专属 Coding API 端点） */
-      codingPlanEnabled?: boolean;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    zhipu: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** 是否启用 GLM Coding Plan 模式（使用专属 Coding API 端点） */
-      codingPlanEnabled?: boolean;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    minimax: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** OAuth auth type: 'apikey' (default) or 'oauth' (MiniMax Portal OAuth) */
-      authType?: 'apikey' | 'oauth';
-      /** OAuth refresh token for automatic token renewal */
-      oauthRefreshToken?: string;
-      /** OAuth token expiry as Unix timestamp in milliseconds */
-      oauthTokenExpiresAt?: number;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    youdaozhiyun: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    qwen: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** 是否启用 Qwen Coding Plan 模式（使用专属 Coding API 端点） */
-      codingPlanEnabled?: boolean;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    openrouter: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    gemini: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    anthropic: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    volcengine: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** 是否启用 Volcengine Coding Plan 模式（使用专属 Coding API 端点） */
-      codingPlanEnabled?: boolean;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    xiaomi: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    stepfun: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    ollama: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    [key: string]: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      codingPlanEnabled?: boolean;
-      authType?: 'apikey' | 'oauth';
-      oauthRefreshToken?: string;
-      oauthTokenExpiresAt?: number;
-      displayName?: string;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-  };
+  providers?: Record<string, ProviderConfig>;
   // 主题配置
   theme: 'light' | 'dark' | 'system';
   // 语言配置
@@ -226,25 +37,13 @@ export interface AppConfig {
     newChat: string;
     search: string;
     settings: string;
+    sendMessage: string;
     [key: string]: string | undefined;
   };
 }
 
-/**
- * Build default provider configs from the shared registry.
- * Each provider gets: enabled=false, empty apiKey, default baseUrl/apiFormat/models.
- * Providers with codingPlan support also get codingPlanEnabled=false.
- * The 'custom' provider is not in the registry and is hardcoded separately.
- */
 const buildDefaultProviders = (): AppConfig['providers'] => {
-  const providers: Record<string, {
-    enabled: boolean;
-    apiKey: string;
-    baseUrl: string;
-    apiFormat?: 'anthropic' | 'openai' | 'gemini';
-    codingPlanEnabled?: boolean;
-    models?: Array<{ id: string; name: string; supportsImage?: boolean }>;
-  }> = {};
+  const providers: Record<string, ProviderConfig> = {};
 
   for (const id of ProviderRegistry.providerIds) {
     const def = ProviderRegistry.get(id)!;
@@ -258,7 +57,7 @@ const buildDefaultProviders = (): AppConfig['providers'] => {
     };
   }
 
-  return providers as AppConfig['providers'];
+  return providers;
 };
 
 // 默认配置
@@ -287,6 +86,7 @@ export const defaultConfig: AppConfig = {
     newChat: 'Ctrl+N',
     search: 'Ctrl+F',
     settings: 'Ctrl+,',
+    sendMessage: 'Enter',
   }
 };
 
@@ -299,6 +99,8 @@ export const CONFIG_KEYS = {
   SKILLS: 'skills',
 };
 
+// 模型提供商分类
+export const EN_PRIORITY_PROVIDERS = ['openai', 'anthropic', 'gemini'] as const;
 // Provider lists derived from ProviderRegistry — single source of truth
 export const CHINA_PROVIDERS = [...ProviderRegistry.idsByRegion('china')] as const;
 export const GLOBAL_PROVIDERS = ProviderRegistry.idsByRegion('global');
@@ -329,7 +131,7 @@ export const getCustomProviderDefaultName = (key: string): string => {
  */
 export const getProviderDisplayName = (
   providerKey: string,
-  providerConfig?: Record<string, unknown>,
+  providerConfig?: { displayName?: string },
 ): string => {
   if (isCustomProvider(providerKey)) {
     const name = providerConfig && typeof providerConfig.displayName === 'string'
