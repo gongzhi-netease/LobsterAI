@@ -5,6 +5,57 @@ import path from 'path';
 const LOCAL_EXTENSIONS_DIR = 'openclaw-extensions';
 const THIRD_PARTY_EXTENSIONS_DIR = 'third-party-extensions';
 
+export type OpenClawExtensionManifest = {
+  directoryId: string;
+  pluginId: string;
+  directory: string;
+  manifestPath: string;
+  source: 'bundled' | 'local';
+};
+
+const readExtensionManifest = (
+  baseDir: string,
+  directoryId: string,
+  source: OpenClawExtensionManifest['source'],
+): OpenClawExtensionManifest | null => {
+  const directory = path.join(baseDir, directoryId);
+  const manifestPath = path.join(directory, 'openclaw.plugin.json');
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { id?: unknown };
+    const pluginId = typeof manifest.id === 'string' ? manifest.id.trim() : '';
+    if (!pluginId) {
+      return null;
+    }
+    return {
+      directoryId,
+      pluginId,
+      directory,
+      manifestPath,
+      source,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const listExtensionManifests = (
+  extensionsDir: string | null,
+  source: OpenClawExtensionManifest['source'],
+): OpenClawExtensionManifest[] => {
+  if (!extensionsDir) {
+    return [];
+  }
+
+  try {
+    return fs.readdirSync(extensionsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => readExtensionManifest(extensionsDir, entry.name, source))
+      .filter((entry): entry is OpenClawExtensionManifest => entry !== null);
+  } catch {
+    return [];
+  }
+};
+
 const findLocalExtensionsSourceDir = (): string | null => {
   if (app.isPackaged) {
     return null;
@@ -28,7 +79,7 @@ const findLocalExtensionsSourceDir = (): string | null => {
   return null;
 };
 
-const findBundledExtensionsDir = (): string | null => {
+export const findBundledExtensionsDir = (): string | null => {
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, 'cfmind', THIRD_PARTY_EXTENSIONS_DIR)]
     : [
@@ -98,6 +149,10 @@ export const listLocalOpenClawExtensionIds = (): string[] => {
   }
 };
 
+export const listLocalOpenClawExtensionManifests = (): OpenClawExtensionManifest[] => (
+  listExtensionManifests(findLocalExtensionsSourceDir(), 'local')
+);
+
 export const listBundledOpenClawExtensionIds = (): string[] => {
   const extensionsDir = findBundledExtensionsDir();
   if (!extensionsDir) {
@@ -114,9 +169,28 @@ export const listBundledOpenClawExtensionIds = (): string[] => {
   }
 };
 
+export const listBundledOpenClawExtensionManifests = (): OpenClawExtensionManifest[] => (
+  listExtensionManifests(findBundledExtensionsDir(), 'bundled')
+);
+
+export const listAvailableOpenClawExtensionManifests = (): OpenClawExtensionManifest[] => [
+  ...listBundledOpenClawExtensionManifests(),
+  ...listLocalOpenClawExtensionManifests(),
+];
+
+export const resolveOpenClawExtensionPluginId = (extensionId: string): string | null => {
+  const normalized = extensionId.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const manifest = listAvailableOpenClawExtensionManifests()
+    .find((entry) => entry.directoryId === normalized || entry.pluginId === normalized);
+  return manifest?.pluginId ?? null;
+};
+
 export const hasBundledOpenClawExtension = (extensionId: string): boolean => {
-  return listBundledOpenClawExtensionIds().includes(extensionId)
-    || listLocalOpenClawExtensionIds().includes(extensionId);
+  return resolveOpenClawExtensionPluginId(extensionId) !== null;
 };
 
 /**
@@ -126,17 +200,18 @@ export const hasBundledOpenClawExtension = (extensionId: string): boolean => {
  * in a separate `extensions/` directory — NOT in `dist/extensions/` which is
  * reserved for runtime-bundled plugins that satisfy the bundled-channel-entry
  * contract.  The gateway discovers these via `plugins.load.paths`.
+ *
+ * The directory is located under userData so that user-installed plugins
+ * persist across application upgrades / reinstalls.
  */
 export const findThirdPartyExtensionsDir = (): string | null => {
-  const dir = findBundledExtensionsDir();
-  if (!dir) return null;
-  // Resolve symlinks so the path matches what the gateway sees after
-  // resolving the `current` → `win-x64` (or other platform) junction.
+  const dir = path.join(app.getPath('userData'), THIRD_PARTY_EXTENSIONS_DIR);
   try {
-    return fs.realpathSync(dir);
+    fs.mkdirSync(dir, { recursive: true });
   } catch {
-    return dir;
+    return null;
   }
+  return dir;
 };
 
 /**

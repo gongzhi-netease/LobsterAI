@@ -1,20 +1,20 @@
-import { app } from 'electron';
 import { execSync, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, chmodSync, statSync, readdirSync } from 'fs';
+import { app } from 'electron';
+import { chmodSync, existsSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from 'fs';
 import { delimiter, dirname, join } from 'path';
+
+import { buildSessionTitleFromInput } from '../../common/sessionTitle';
 import { buildEnvForConfig, getCurrentApiConfig, resolveCurrentApiConfig, resolveRawApiConfig } from './claudeSettings';
-import type { OpenAICompatProxyTarget } from './coworkOpenAICompatProxy';
 import { coworkLog } from './coworkLogger';
-import { appendPythonRuntimeToEnv } from './pythonRuntime';
-import { isSystemProxyEnabled, resolveSystemProxyUrl } from './systemProxy';
 import {
   buildAnthropicMessagesUrl,
   buildGeminiGenerateContentUrl,
   CoworkModelProtocol,
   extractApiErrorSnippet,
-  extractTextFromAnthropicResponse,
-  extractTextFromGeminiResponse,
 } from './coworkModelApi';
+import type { OpenAICompatProxyTarget } from './coworkOpenAICompatProxy';
+import { appendPythonRuntimeToEnv } from './pythonRuntime';
+import { isSystemProxyEnabled, resolveSystemProxyUrlForTargets } from './systemProxy';
 
 function appendEnvPath(current: string | undefined, additions: string[]): string | undefined {
   const items = new Set<string>();
@@ -1112,6 +1112,26 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
       env.PATH = [devBinDir, env.PATH].filter(Boolean).join(delimiter);
       coworkLog('INFO', 'applyPackagedEnvOverrides', `Dev mode: prepended node_modules/.bin to PATH: ${devBinDir}`);
     }
+
+    // In dev mode, add openclaw runtime's node_modules to NODE_PATH so exec tool
+    // can access shared packages like sharp.
+    const devRuntimeNodeModules = (() => {
+      const candidates = [
+        join(app.getAppPath(), 'vendor', 'openclaw-runtime', 'current', 'node_modules'),
+        join(process.cwd(), 'vendor', 'openclaw-runtime', 'current', 'node_modules'),
+      ];
+      for (const c of candidates) {
+        try {
+          const resolved = realpathSync(c);
+          if (existsSync(resolved)) return resolved;
+        } catch { /* symlink target missing — skip */ }
+      }
+      return null;
+    })();
+    if (devRuntimeNodeModules) {
+      env.NODE_PATH = appendEnvPath(env.NODE_PATH, [devRuntimeNodeModules]);
+      coworkLog('INFO', 'applyPackagedEnvOverrides', `Dev mode: added openclaw runtime node_modules to NODE_PATH: ${devRuntimeNodeModules}`);
+    }
     return;
   }
 
@@ -1186,6 +1206,7 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
   const nodePaths = [
     join(resourcesPath, 'app.asar', 'node_modules'),
     join(resourcesPath, 'app.asar.unpacked', 'node_modules'),
+    join(resourcesPath, 'cfmind', 'node_modules'),
   ].filter((nodePath) => existsSync(nodePath));
 
   if (nodePaths.length > 0) {
@@ -1341,13 +1362,13 @@ export async function getEnhancedEnv(target: OpenAICompatProxyTarget = 'local'):
   }
 
   // Resolve proxy from system settings
-  const proxyUrl = await resolveSystemProxyUrl('https://openrouter.ai');
+  const { proxyUrl, targetUrl } = await resolveSystemProxyUrlForTargets();
   if (proxyUrl) {
     env.http_proxy = proxyUrl;
     env.https_proxy = proxyUrl;
     env.HTTP_PROXY = proxyUrl;
     env.HTTPS_PROXY = proxyUrl;
-    console.log('Injected system proxy for subprocess:', proxyUrl);
+    console.log(`[CoworkUtil] Injected system proxy for subprocess via ${targetUrl}:`, proxyUrl);
   }
 
   return env;
@@ -1393,9 +1414,7 @@ export async function getEnhancedEnvWithTmpdir(
   return env;
 }
 
-const SESSION_TITLE_FALLBACK = 'New Session';
-const SESSION_TITLE_MAX_CHARS = 50;
-const SESSION_TITLE_TIMEOUT_MS = 8000;
+const SESSION_TITLE_FALLBACK = 'New Chat';
 const COWORK_MODEL_PROBE_TIMEOUT_MS = 20000;
 
 type SessionTitleApiConfig =
@@ -1441,65 +1460,6 @@ function resolveSessionTitleApiConfig(): { config: SessionTitleApiConfig | null;
       model: resolution.config.model,
     },
   };
-}
-
-function normalizeTitleToPlainText(value: string, fallback: string): string {
-  if (!value.trim()) return fallback;
-
-  let title = value.trim();
-  const fenced = /```(?:[\w-]+)?\s*([\s\S]*?)```/i.exec(title);
-  if (fenced?.[1]) {
-    title = fenced[1].trim();
-  }
-
-  title = title
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    .replace(/\*([^*\n]+)\*/g, '$1')
-    .replace(/_([^_\n]+)_/g, '$1')
-    .replace(/~~([^~]+)~~/g, '$1')
-    .replace(/^\s{0,3}#{1,6}\s+/, '')
-    .replace(/^\s*>\s?/, '')
-    .replace(/^\s*[-*+]\s+/, '')
-    .replace(/^\s*\d+\.\s+/, '')
-    .replace(/\r?\n+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const labeledTitle = /^(?:title|标题)\s*[:：]\s*(.+)$/i.exec(title);
-  if (labeledTitle?.[1]) {
-    title = labeledTitle[1].trim();
-  }
-
-  title = title
-    .replace(/^["'`“”‘’]+/, '')
-    .replace(/["'`“”‘’]+$/, '')
-    .trim();
-
-  if (!title) return fallback;
-  if (title.length > SESSION_TITLE_MAX_CHARS) {
-    title = title.slice(0, SESSION_TITLE_MAX_CHARS).trim();
-  }
-  return title || fallback;
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError';
-}
-
-function buildFallbackSessionTitle(userIntent: string | null): string {
-  const normalizedInput = typeof userIntent === 'string' ? userIntent.trim() : '';
-  if (!normalizedInput) {
-    return SESSION_TITLE_FALLBACK;
-  }
-  const firstLine = normalizedInput
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean) || '';
-  return normalizeTitleToPlainText(firstLine, SESSION_TITLE_FALLBACK);
 }
 
 export async function probeCoworkModelReadiness(
@@ -1582,88 +1542,9 @@ export async function probeCoworkModelReadiness(
   }
 }
 
-export async function generateSessionTitle(userIntent: string | null): Promise<string> {
-  const normalizedInput = typeof userIntent === 'string' ? userIntent.trim() : '';
-  const fallbackTitle = buildFallbackSessionTitle(normalizedInput);
-  if (!normalizedInput) {
-    return fallbackTitle;
-  }
-
-  const { config, error } = resolveSessionTitleApiConfig();
-  if (!config) {
-    if (error) {
-      console.warn('[cowork-title] Skip title generation due to missing API config:', error);
-    }
-    return fallbackTitle;
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), SESSION_TITLE_TIMEOUT_MS);
-
-  try {
-    const url = config.protocol === CoworkModelProtocol.GeminiNative
-      ? buildGeminiGenerateContentUrl(config.baseURL, config.model)
-      : buildAnthropicMessagesUrl(config.baseURL);
-    const prompt = `Generate a short title from this input, keep the same language, return plain text only (no markdown), and keep it within ${SESSION_TITLE_MAX_CHARS} characters: ${normalizedInput}`;
-    console.log(`[cowork-title] Generating title: protocol=${config.protocol}, baseURL=${config.baseURL}, requestUrl=${url}, model=${config.model}`);
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: config.protocol === CoworkModelProtocol.GeminiNative
-        ? {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': config.apiKey,
-          }
-        : {
-            'Content-Type': 'application/json',
-            'x-api-key': config.apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-      body: JSON.stringify(
-        config.protocol === CoworkModelProtocol.GeminiNative
-          ? {
-              contents: [{ role: 'user', parts: [{ text: prompt }] }],
-              generationConfig: {
-                maxOutputTokens: 80,
-                temperature: 0,
-              },
-            }
-          : {
-              model: config.model,
-              max_tokens: 80,
-              temperature: 0,
-              messages: [{ role: 'user', content: prompt }],
-            }
-      ),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      console.warn(
-        '[cowork-title] Failed to generate title:',
-        response.status,
-        errorText.slice(0, 240)
-      );
-      return fallbackTitle;
-    }
-
-    const payload = await response.json();
-    console.log(`[cowork-title] Title response payload:`, JSON.stringify(payload).slice(0, 500));
-    const llmTitle = config.protocol === CoworkModelProtocol.GeminiNative
-      ? extractTextFromGeminiResponse(payload)
-      : extractTextFromAnthropicResponse(payload);
-    console.log(`[cowork-title] Extracted title text: "${llmTitle}"`);
-    return normalizeTitleToPlainText(llmTitle, fallbackTitle);
-  } catch (error) {
-    if (isAbortError(error)) {
-      const timeoutSeconds = Math.ceil(SESSION_TITLE_TIMEOUT_MS / 1000);
-      console.debug(`[cowork-title] Title generation timed out after ${timeoutSeconds}s. Using fallback title.`);
-      return fallbackTitle;
-    }
-    console.error('[cowork-title] Failed to generate session title:', error);
-    return fallbackTitle;
-  } finally {
-    clearTimeout(timeoutId);
-  }
+export async function generateSessionTitle(
+  userIntent: string | null,
+  defaultTitle = SESSION_TITLE_FALLBACK
+): Promise<string> {
+  return buildSessionTitleFromInput(userIntent, defaultTitle);
 }

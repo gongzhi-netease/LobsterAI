@@ -5,8 +5,12 @@ import {
   AnthropicIcon,
   CustomProviderIcon,
   DeepSeekIcon,
+  DoubaoIcon,
   GeminiIcon,
   GitHubCopilotIcon,
+  HappyHorseIcon,
+  KlingIcon,
+  LmStudioIcon,
   MiniMaxIcon,
   MoonshotIcon,
   OllamaIcon,
@@ -21,9 +25,19 @@ import {
   ZhipuIcon,
 } from '../components/icons/providers';
 
+export const ProviderIconId = {
+  Doubao: 'doubao',
+  HappyHorse: 'happyhorse',
+  Kling: 'kling',
+} as const;
+export type ProviderIconId = typeof ProviderIconId[keyof typeof ProviderIconId];
+
 const PROVIDER_ICON_MAP: Record<string, React.ReactNode> = {
   [ProviderName.OpenAI]:       <OpenAIIcon />,
   [ProviderName.DeepSeek]:     <DeepSeekIcon />,
+  [ProviderIconId.Doubao]:     <DoubaoIcon />,
+  [ProviderIconId.HappyHorse]: <HappyHorseIcon />,
+  [ProviderIconId.Kling]:      <KlingIcon />,
   [ProviderName.Gemini]:       <GeminiIcon />,
   [ProviderName.Anthropic]:    <AnthropicIcon />,
   [ProviderName.Moonshot]:     <MoonshotIcon />,
@@ -37,6 +51,7 @@ const PROVIDER_ICON_MAP: Record<string, React.ReactNode> = {
   [ProviderName.OpenRouter]:   <OpenRouterIcon />,
   [ProviderName.Copilot]:      <GitHubCopilotIcon />,
   [ProviderName.Ollama]:       <OllamaIcon />,
+  [ProviderName.LmStudio]:     <LmStudioIcon />,
   [ProviderName.Qianfan]:      <QianfanIcon />,
 };
 

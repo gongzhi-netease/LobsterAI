@@ -70,6 +70,7 @@ const BUNDLED_EXTENSIONS_TO_KEEP = new Set([
   // --- Providers (LobsterAI may route to these) ---
   'anthropic', 'deepseek', 'google', 'kimi-coding', 'minimax', 'moonshot',
   'ollama', 'openai', 'openrouter', 'qianfan', 'qwen', 'stepfun', 'volcengine',
+  'xiaomi',
   // --- Channels (managed via entries or third-party replacements) ---
   'telegram', 'discord', 'feishu', 'qqbot',
   // --- Core features ---
@@ -97,7 +98,9 @@ const PACKAGES_TO_STUB = [
   '@napi-rs',
   'pdfjs-dist',
   '@matrix-org',
-  '@img'
+  // NOTE: @img is intentionally NOT stubbed — it contains platform-specific sharp
+  // native bindings (e.g. @img/sharp-win32-x64) required by openclaw's image-ops
+  // module and by exec-tool scripts that use require('sharp').
 ];
 
 const GENERIC_STUB_INDEX_CJS = `// Stub (CJS): this package is not needed for headless gateway operation.

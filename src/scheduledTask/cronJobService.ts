@@ -1,5 +1,24 @@
 import { BrowserWindow } from 'electron';
+
+import { parseChannelSessionKey } from '../main/libs/openclawChannelSessionSync';
+import { PlatformRegistry } from '../shared/platform';
 import type {
+  DeliveryMode as DeliveryModeType,
+  GatewayStatus as GatewayStatusType,
+  SessionTarget as SessionTargetType,
+  WakeMode as WakeModeType,
+} from './constants';
+import {
+  DeliveryMode,
+  GatewayStatus,
+  InternalTaskMarker,
+  IpcChannel,
+  PayloadKind,
+  ScheduleKind,
+  TaskStatus,
+} from './constants';
+import type {
+  RunFilter,
   Schedule,
   ScheduledTask,
   ScheduledTaskDelivery,
@@ -9,24 +28,6 @@ import type {
   ScheduledTaskRunWithName,
   TaskState,
 } from './types';
-import { parseChannelSessionKey } from '../main/libs/openclawChannelSessionSync';
-import { PlatformRegistry } from '../shared/platform';
-import {
-  ScheduleKind,
-  PayloadKind,
-  DeliveryMode,
-  SessionTarget,
-  WakeMode,
-  TaskStatus,
-  GatewayStatus,
-  IpcChannel,
-} from './constants';
-import type {
-  SessionTarget as SessionTargetType,
-  WakeMode as WakeModeType,
-  DeliveryMode as DeliveryModeType,
-  GatewayStatus as GatewayStatusType,
-} from './constants';
 
 type GatewayClientLike = {
   request: <T = Record<string, unknown>>(
@@ -130,6 +131,35 @@ interface CronJobServiceDeps {
   ensureGatewayReady: () => Promise<void>;
 }
 
+type InternalScheduledTaskCandidate = {
+  description?: string | null;
+  payload?: {
+    kind?: string;
+    message?: string;
+    text?: string;
+  } | null;
+};
+
+export function isInternalScheduledTaskJob(job: InternalScheduledTaskCandidate): boolean {
+  const description = job.description?.trim() ?? '';
+  if (description.startsWith(InternalTaskMarker.MemoryCoreManagedDescriptionPrefix)) {
+    return true;
+  }
+
+  const payload = job.payload;
+  let payloadText: string | undefined;
+  if (payload?.kind === PayloadKind.SystemEvent) {
+    payloadText = payload.text;
+  } else if (payload?.kind === PayloadKind.AgentTurn) {
+    payloadText = payload.message;
+  }
+
+  return (
+    typeof payloadText === 'string' &&
+    payloadText.trim().startsWith(InternalTaskMarker.MemoryCorePayloadPrefix)
+  );
+}
+
 /**
  * Coerce a value to a finite number, returning `fallback` when the value is
  * undefined, null, NaN, Infinity, or not a number at all.
@@ -156,6 +186,11 @@ function mapGatewayResultStatus(
   if (status === GatewayStatus.Error) return TaskStatus.Error;
   if (status === GatewayStatus.Skipped) return TaskStatus.Skipped;
   return null;
+}
+
+function matchesRunFilter(run: ScheduledTaskRun, filter?: RunFilter): boolean {
+  if (filter?.status && run.status !== filter.status) return false;
+  return true;
 }
 
 /**
@@ -244,7 +279,10 @@ function toGatewayPayload(payload: ScheduledTaskPayload): GatewayPayload {
 }
 
 function toGatewayDelivery(delivery?: ScheduledTaskDelivery): GatewayDelivery | undefined {
-  console.log('[CronJobService][toGatewayDelivery] input delivery:', JSON.stringify(delivery, null, 2));
+  console.log(
+    '[CronJobService][toGatewayDelivery] input delivery:',
+    JSON.stringify(delivery, null, 2),
+  );
   if (!delivery) {
     console.log('[CronJobService][toGatewayDelivery] no delivery, returning undefined');
     return undefined;
@@ -257,7 +295,10 @@ function toGatewayDelivery(delivery?: ScheduledTaskDelivery): GatewayDelivery | 
       ...(delivery.channel ? { channel: delivery.channel } : {}),
       ...(delivery.to ? { to: delivery.to } : {}),
     } as GatewayDelivery;
-    console.log('[CronJobService][toGatewayDelivery] mode=none with preserved channel/to:', JSON.stringify(result));
+    console.log(
+      '[CronJobService][toGatewayDelivery] mode=none with preserved channel/to:',
+      JSON.stringify(result),
+    );
     return result;
   }
 
@@ -275,11 +316,12 @@ function toGatewayDelivery(delivery?: ScheduledTaskDelivery): GatewayDelivery | 
     ...(openclawChannel ? { channel: openclawChannel } : {}),
     ...(delivery.to ? { to: delivery.to } : {}),
     ...(delivery.accountId ? { accountId: delivery.accountId } : {}),
-    ...(typeof delivery.bestEffort === 'boolean'
-      ? { bestEffort: delivery.bestEffort }
-      : {}),
+    ...(typeof delivery.bestEffort === 'boolean' ? { bestEffort: delivery.bestEffort } : {}),
   };
-  console.log('[CronJobService][toGatewayDelivery] output gatewayDelivery:', JSON.stringify(result, null, 2));
+  console.log(
+    '[CronJobService][toGatewayDelivery] output gatewayDelivery:',
+    JSON.stringify(result, null, 2),
+  );
   return result;
 }
 
@@ -294,9 +336,9 @@ export function mapGatewayTaskState(
   // When delivery.mode is "none" and the gateway reports an error that is
   // purely a delivery failure, downgrade to success.
   if (
-    lastStatus === TaskStatus.Error
-    && deliveryMode === DeliveryMode.None
-    && isDeliveryOnlyError({
+    lastStatus === TaskStatus.Error &&
+    deliveryMode === DeliveryMode.None &&
+    isDeliveryOnlyError({
       status: state.lastRunStatus ?? state.lastStatus,
       error: state.lastError,
       deliveryError: state.lastDeliveryError,
@@ -343,28 +385,25 @@ export function mapGatewayJob(job: GatewayJob): ScheduledTask {
     schedule: mapGatewaySchedule(job.schedule),
     sessionTarget: job.sessionTarget,
     wakeMode: job.wakeMode,
-    payload: job.payload.kind === PayloadKind.SystemEvent
-      ? { kind: PayloadKind.SystemEvent, text: job.payload.text }
-      : {
-          kind: PayloadKind.AgentTurn,
-          message: job.payload.message,
-          ...(typeof job.payload.timeoutSeconds === 'number'
-            ? { timeoutSeconds: job.payload.timeoutSeconds }
-            : {}),
-          ...(job.payload.model ? { model: job.payload.model } : {}),
-        },
+    payload:
+      job.payload.kind === PayloadKind.SystemEvent
+        ? { kind: PayloadKind.SystemEvent, text: job.payload.text }
+        : {
+            kind: PayloadKind.AgentTurn,
+            message: job.payload.message,
+            ...(typeof job.payload.timeoutSeconds === 'number'
+              ? { timeoutSeconds: job.payload.timeoutSeconds }
+              : {}),
+            ...(job.payload.model ? { model: job.payload.model } : {}),
+          },
     delivery: {
       mode: delivery.mode,
       ...(delivery.channel || inferredChannel
         ? { channel: delivery.channel ?? inferredChannel }
         : {}),
-      ...(delivery.to || inferredTo
-        ? { to: delivery.to ?? inferredTo }
-        : {}),
+      ...(delivery.to || inferredTo ? { to: delivery.to ?? inferredTo } : {}),
       ...(delivery.accountId ? { accountId: delivery.accountId } : {}),
-      ...(typeof delivery.bestEffort === 'boolean'
-        ? { bestEffort: delivery.bestEffort }
-        : {}),
+      ...(typeof delivery.bestEffort === 'boolean' ? { bestEffort: delivery.bestEffort } : {}),
     },
     agentId: job.agentId ?? null,
     sessionKey: job.sessionKey ?? null,
@@ -375,15 +414,16 @@ export function mapGatewayJob(job: GatewayJob): ScheduledTask {
 }
 
 export function mapGatewayRun(entry: GatewayRunLogEntry): ScheduledTaskRun {
-  let status = entry.action && entry.action !== 'finished'
-    ? TaskStatus.Running
-    : (mapGatewayResultStatus(entry.status) ?? TaskStatus.Error);
+  let status =
+    entry.action && entry.action !== 'finished'
+      ? TaskStatus.Running
+      : (mapGatewayResultStatus(entry.status) ?? TaskStatus.Error);
 
   // Suppress delivery-only errors: the agent turn succeeded but the
   // gateway conflated a delivery failure with the job status.
   if (
-    status === TaskStatus.Error
-    && isDeliveryOnlyError({
+    status === TaskStatus.Error &&
+    isDeliveryOnlyError({
       status: entry.status,
       error: entry.error,
       deliveryError: entry.deliveryError,
@@ -402,7 +442,10 @@ export function mapGatewayRun(entry: GatewayRunLogEntry): ScheduledTaskRun {
     sessionKey: entry.sessionKey ?? null,
     status,
     startedAt: new Date(tsMs).toISOString(),
-    finishedAt: status === TaskStatus.Running ? null : new Date(safeFiniteNumber(entry.ts, tsMs)).toISOString(),
+    finishedAt:
+      status === TaskStatus.Running
+        ? null
+        : new Date(safeFiniteNumber(entry.ts, tsMs)).toISOString(),
     durationMs: safeFiniteNumberOrNull(entry.durationMs),
     error: status === TaskStatus.Success ? null : (entry.error ?? null),
   };
@@ -460,19 +503,39 @@ export class CronJobService {
     return client;
   }
 
+  private async listGatewayJobs(params: Record<string, unknown> = {}): Promise<GatewayJob[]> {
+    const client = await this.client();
+    const result = await client.request<{ jobs?: GatewayJob[] }>('cron.list', {
+      includeDisabled: true,
+      limit: 200,
+      ...params,
+    });
+    return Array.isArray(result.jobs) ? result.jobs : [];
+  }
+
   async addJob(input: ScheduledTaskInput): Promise<ScheduledTask> {
     console.log('[CronJobService][addJob] full input:', JSON.stringify(input, null, 2));
-    console.log('[CronJobService][addJob] delivery details:', JSON.stringify({
-      deliveryMode: input.delivery?.mode,
-      deliveryChannel: input.delivery?.channel,
-      deliveryTo: input.delivery?.to,
-      deliveryAccountId: input.delivery?.accountId,
-      sessionTarget: input.sessionTarget,
-      sessionKey: input.sessionKey,
-    }, null, 2));
+    console.log(
+      '[CronJobService][addJob] delivery details:',
+      JSON.stringify(
+        {
+          deliveryMode: input.delivery?.mode,
+          deliveryChannel: input.delivery?.channel,
+          deliveryTo: input.delivery?.to,
+          deliveryAccountId: input.delivery?.accountId,
+          sessionTarget: input.sessionTarget,
+          sessionKey: input.sessionKey,
+        },
+        null,
+        2,
+      ),
+    );
     const client = await this.client();
     const gatewayDelivery = toGatewayDelivery(input.delivery);
-    console.log('[CronJobService][addJob] resolved gatewayDelivery:', JSON.stringify(gatewayDelivery));
+    console.log(
+      '[CronJobService][addJob] resolved gatewayDelivery:',
+      JSON.stringify(gatewayDelivery),
+    );
     const job = await client.request<GatewayJob>('cron.add', {
       name: input.name,
       description: input.description || undefined,
@@ -493,14 +556,21 @@ export class CronJobService {
 
   async updateJob(id: string, input: Partial<ScheduledTaskInput>): Promise<ScheduledTask> {
     console.log('[CronJobService][updateJob] id:', id, 'input:', JSON.stringify(input, null, 2));
-    console.log('[CronJobService][updateJob] delivery details:', JSON.stringify({
-      deliveryMode: input.delivery?.mode,
-      deliveryChannel: input.delivery?.channel,
-      deliveryTo: input.delivery?.to,
-      deliveryAccountId: input.delivery?.accountId,
-      sessionTarget: input.sessionTarget,
-      sessionKey: input.sessionKey,
-    }, null, 2));
+    console.log(
+      '[CronJobService][updateJob] delivery details:',
+      JSON.stringify(
+        {
+          deliveryMode: input.delivery?.mode,
+          deliveryChannel: input.delivery?.channel,
+          deliveryTo: input.delivery?.to,
+          deliveryAccountId: input.delivery?.accountId,
+          sessionTarget: input.sessionTarget,
+          sessionKey: input.sessionKey,
+        },
+        null,
+        2,
+      ),
+    );
     const client = await this.client();
     const patch: Record<string, unknown> = {};
 
@@ -513,7 +583,8 @@ export class CronJobService {
     if (input.sessionTarget !== undefined) patch.sessionTarget = input.sessionTarget;
     if (input.wakeMode !== undefined) patch.wakeMode = input.wakeMode;
     if (input.payload !== undefined) patch.payload = toGatewayPayload(input.payload);
-    if (input.delivery !== undefined) patch.delivery = toGatewayDelivery(input.delivery) ?? { mode: DeliveryMode.None };
+    if (input.delivery !== undefined)
+      patch.delivery = toGatewayDelivery(input.delivery) ?? { mode: DeliveryMode.None };
     if (input.agentId !== undefined) patch.agentId = input.agentId?.trim() || null;
     if (input.sessionKey !== undefined) patch.sessionKey = input.sessionKey?.trim() || null;
 
@@ -532,28 +603,23 @@ export class CronJobService {
   }
 
   async listJobs(): Promise<ScheduledTask[]> {
-    const client = await this.client();
-    const result = await client.request<{ jobs?: GatewayJob[] }>('cron.list', {
-      includeDisabled: true,
-      limit: 200,
-    });
-    return Array.isArray(result.jobs) ? result.jobs.map(mapGatewayJob) : [];
+    const jobs = await this.listGatewayJobs();
+    return jobs.filter(job => !isInternalScheduledTaskJob(job)).map(mapGatewayJob);
   }
 
   async getJob(id: string): Promise<ScheduledTask | null> {
     const raw = await this.getJobRaw(id);
+    if (raw && isInternalScheduledTaskJob(raw)) return null;
     return raw ? mapGatewayJob(raw) : null;
   }
 
   private async getJobRaw(id: string): Promise<GatewayJob | null> {
-    const client = await this.client();
     try {
-      const result = await client.request<{ jobs?: GatewayJob[] }>('cron.list', {
-        includeDisabled: true,
+      const jobs = await this.listGatewayJobs({
         query: id,
         limit: 20,
       });
-      return result.jobs?.find((job) => job.id === id) ?? null;
+      return jobs.find(job => job.id === id) ?? null;
     } catch {
       return null;
     }
@@ -570,19 +636,60 @@ export class CronJobService {
     await client.request('cron.run', { id });
   }
 
-  async listRuns(jobId: string, limit = 20, offset = 0): Promise<ScheduledTaskRun[]> {
+  async listRuns(
+    jobId: string,
+    limit = 20,
+    offset = 0,
+    filter?: RunFilter,
+  ): Promise<ScheduledTaskRun[]> {
+    const job = await this.getJobRaw(jobId);
+    if (job && isInternalScheduledTaskJob(job)) return [];
+
     const client = await this.client();
-    const result = await client.request<{ entries?: GatewayRunLogEntry[] }>('cron.runs', {
-      scope: 'job',
-      id: jobId,
-      limit,
-      offset,
-      sortDir: 'desc',
-    });
-    return Array.isArray(result.entries) ? result.entries.map(mapGatewayRun) : [];
+    const visibleLimit = Math.max(0, limit);
+    const visibleOffset = Math.max(0, offset);
+    if (visibleLimit === 0) return [];
+
+    const visibleRuns: ScheduledTaskRun[] = [];
+    let skippedVisible = 0;
+    let rawOffset = 0;
+    const pageSize = Math.max(visibleLimit, 50);
+
+    while (visibleRuns.length < visibleLimit) {
+      const result = await client.request<{ entries?: GatewayRunLogEntry[] }>('cron.runs', {
+        scope: 'job',
+        id: jobId,
+        limit: pageSize,
+        offset: rawOffset,
+        sortDir: 'desc',
+        ...(filter?.startDate && { startMs: new Date(filter.startDate + 'T00:00:00').getTime() }),
+        ...(filter?.endDate && { endMs: new Date(filter.endDate + 'T23:59:59').getTime() }),
+      });
+      const entries = Array.isArray(result.entries) ? result.entries : [];
+      if (entries.length === 0) break;
+
+      for (const entry of entries) {
+        const run = mapGatewayRun(entry);
+        if (!matchesRunFilter(run, filter)) continue;
+        if (skippedVisible < visibleOffset) {
+          skippedVisible += 1;
+          continue;
+        }
+        visibleRuns.push(run);
+        if (visibleRuns.length >= visibleLimit) break;
+      }
+
+      rawOffset += entries.length;
+      if (entries.length < pageSize) break;
+    }
+
+    return visibleRuns;
   }
 
   async countRuns(jobId: string): Promise<number> {
+    const job = await this.getJobRaw(jobId);
+    if (job && isInternalScheduledTaskJob(job)) return 0;
+
     const client = await this.client();
     const result = await client.request<{ total?: number }>('cron.runs', {
       scope: 'job',
@@ -592,40 +699,64 @@ export class CronJobService {
     return typeof result.total === 'number' ? result.total : 0;
   }
 
-  async listAllRuns(limit = 20, offset = 0): Promise<ScheduledTaskRunWithName[]> {
+  async listAllRuns(
+    limit = 20,
+    offset = 0,
+    filter?: RunFilter,
+  ): Promise<ScheduledTaskRunWithName[]> {
     const client = await this.client();
-    const result = await client.request<{ entries?: GatewayRunLogEntry[] }>('cron.runs', {
-      scope: 'all',
-      limit,
-      offset,
-      sortDir: 'desc',
-    });
-    if (!Array.isArray(result.entries) || result.entries.length === 0) return [];
+    const visibleLimit = Math.max(0, limit);
+    const visibleOffset = Math.max(0, offset);
+    if (visibleLimit === 0) return [];
 
-    // Build a jobId→name map for entries missing jobName
-    const missingIds = new Set(
-      result.entries.filter((e) => !e.jobName && !e.summary).map((e) => e.jobId),
-    );
-    const nameMap = new Map<string, string>();
-    if (missingIds.size > 0) {
-      try {
-        const jobs = await this.listJobs();
-        for (const job of jobs) {
-          if (missingIds.has(job.id)) {
-            nameMap.set(job.id, job.name);
-          }
-        }
-      } catch {
-        // fall through
-      }
+    let jobs: GatewayJob[] = [];
+    try {
+      jobs = await this.listGatewayJobs();
+    } catch {
+      jobs = [];
     }
 
-    return result.entries.map((entry) => ({
-      ...mapGatewayRun(entry),
-      taskName: entry.jobName
-        || nameMap.get(entry.jobId)
-        || extractRunTitle(entry.summary)
-        || entry.jobId,
+    const internalJobIds = new Set(
+      jobs.filter(job => isInternalScheduledTaskJob(job)).map(job => job.id),
+    );
+    const nameMap = new Map(jobs.map(job => [job.id, job.name]));
+    const visibleRuns: Array<{ entry: GatewayRunLogEntry; run: ScheduledTaskRun }> = [];
+    let skippedVisible = 0;
+    let rawOffset = 0;
+    const pageSize = Math.max(visibleLimit, 50);
+
+    while (visibleRuns.length < visibleLimit) {
+      const result = await client.request<{ entries?: GatewayRunLogEntry[] }>('cron.runs', {
+        scope: 'all',
+        limit: pageSize,
+        offset: rawOffset,
+        sortDir: 'desc',
+        ...(filter?.startDate && { startMs: new Date(filter.startDate + 'T00:00:00').getTime() }),
+        ...(filter?.endDate && { endMs: new Date(filter.endDate + 'T23:59:59').getTime() }),
+      });
+      const entries = Array.isArray(result.entries) ? result.entries : [];
+      if (entries.length === 0) break;
+
+      for (const entry of entries) {
+        if (internalJobIds.has(entry.jobId)) continue;
+        const run = mapGatewayRun(entry);
+        if (!matchesRunFilter(run, filter)) continue;
+        if (skippedVisible < visibleOffset) {
+          skippedVisible += 1;
+          continue;
+        }
+        visibleRuns.push({ entry, run });
+        if (visibleRuns.length >= visibleLimit) break;
+      }
+
+      rawOffset += entries.length;
+      if (entries.length < pageSize) break;
+    }
+
+    return visibleRuns.map(({ entry, run }) => ({
+      ...run,
+      taskName:
+        entry.jobName || nameMap.get(entry.jobId) || extractRunTitle(entry.summary) || entry.jobId,
     }));
   }
 
@@ -664,6 +795,7 @@ export class CronJobService {
         limit: 200,
       });
       const jobs = Array.isArray(result.jobs) ? result.jobs : [];
+      const visibleJobs = jobs.filter(job => !isInternalScheduledTaskJob(job));
 
       // Refresh jobId → name cache for synchronous lookups (used by session naming).
       this.jobNameCache.clear();
@@ -675,7 +807,7 @@ export class CronJobService {
         }
       }
 
-      for (const job of jobs) {
+      for (const job of visibleJobs) {
         const stateHash = JSON.stringify(job.state);
         const previousHash = this.lastKnownStates.get(job.id);
         if (previousHash !== stateHash) {
@@ -702,7 +834,7 @@ export class CronJobService {
         this.lastKnownRunAtMs.set(job.id, lastRunAtMs);
       }
 
-      const currentIds = new Set(jobs.map((job) => job.id));
+      const currentIds = new Set(visibleJobs.map(job => job.id));
       for (const knownId of this.lastKnownStates.keys()) {
         if (!currentIds.has(knownId)) {
           this.lastKnownStates.delete(knownId);
@@ -720,7 +852,7 @@ export class CronJobService {
   }
 
   private emitStatusUpdate(taskId: string, state: TaskState): void {
-    BrowserWindow.getAllWindows().forEach((window) => {
+    BrowserWindow.getAllWindows().forEach(window => {
       if (!window.isDestroyed()) {
         window.webContents.send(IpcChannel.StatusUpdate, { taskId, state });
       }
@@ -728,7 +860,7 @@ export class CronJobService {
   }
 
   private emitRunUpdate(run: ScheduledTaskRunWithName): void {
-    BrowserWindow.getAllWindows().forEach((window) => {
+    BrowserWindow.getAllWindows().forEach(window => {
       if (!window.isDestroyed()) {
         window.webContents.send(IpcChannel.RunUpdate, { run });
       }
@@ -736,7 +868,7 @@ export class CronJobService {
   }
 
   private emitFullRefresh(): void {
-    BrowserWindow.getAllWindows().forEach((window) => {
+    BrowserWindow.getAllWindows().forEach(window => {
       if (!window.isDestroyed()) {
         window.webContents.send(IpcChannel.Refresh);
       }
