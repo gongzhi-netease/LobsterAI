@@ -1,18 +1,19 @@
-import React, { useCallback, useEffect, useState, useRef } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
-import { RootState } from '../../store';
-import { setViewMode, selectTask } from '../../store/slices/scheduledTaskSlice';
-import { scheduledTaskService } from '../../services/scheduledTask';
+import { ArrowLeftIcon } from '@heroicons/react/24/outline';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+
 import { i18nService } from '../../services/i18n';
-import TaskList from './TaskList';
-import TaskForm from './TaskForm';
-import TaskDetail from './TaskDetail';
+import { scheduledTaskService } from '../../services/scheduledTask';
+import { RootState } from '../../store';
+import { selectTask, setViewMode } from '../../store/slices/scheduledTaskSlice';
+import ComposeIcon from '../icons/ComposeIcon';
+import SidebarToggleIcon from '../icons/SidebarToggleIcon';
+import WindowTitleBar from '../window/WindowTitleBar';
 import AllRunsHistory from './AllRunsHistory';
 import DeleteConfirmModal from './DeleteConfirmModal';
-import { ArrowLeftIcon } from '@heroicons/react/24/outline';
-import SidebarToggleIcon from '../icons/SidebarToggleIcon';
-import ComposeIcon from '../icons/ComposeIcon';
-import WindowTitleBar from '../window/WindowTitleBar';
+import TaskDetail from './TaskDetail';
+import TaskForm from './TaskForm';
+import TaskList from './TaskList';
 
 interface ScheduledTasksViewProps {
   isSidebarCollapsed?: boolean;
@@ -22,6 +23,9 @@ interface ScheduledTasksViewProps {
 }
 
 type TabType = 'tasks' | 'history';
+
+const pageGutterClass = 'px-6 sm:px-8 lg:px-10';
+const pageContentClass = 'mx-auto flex w-full max-w-[760px] items-center justify-between';
 
 const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
   isSidebarCollapsed,
@@ -34,7 +38,7 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
   const viewMode = useSelector((state: RootState) => state.scheduledTask.viewMode);
   const selectedTaskId = useSelector((state: RootState) => state.scheduledTask.selectedTaskId);
   const tasks = useSelector((state: RootState) => state.scheduledTask.tasks);
-  const selectedTask = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) ?? null : null;
+  const selectedTask = selectedTaskId ? (tasks.find(t => t.id === selectedTaskId) ?? null) : null;
   const [activeTab, setActiveTab] = useState<TabType>('tasks');
   const [deleteTaskInfo, setDeleteTaskInfo] = useState<{ id: string; name: string } | null>(null);
   const isFormDirtyRef = useRef(false);
@@ -150,51 +154,53 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
 
       {/* Tabs + New Task button */}
       {showTabs && (
-        <div className="flex items-center justify-between border-b border-border px-4 shrink-0">
-          <div className="flex">
-            <button
-              type="button"
-              onClick={() => handleTabChange('tasks')}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
-                activeTab === 'tasks'
-                  ? 'text-foreground'
-                  : 'text-secondary hover:hover:text-foreground'
-              }`}
-            >
-              {i18nService.t('scheduledTasksTabTasks')}
+        <div className="shrink-0">
+          <div className={pageGutterClass}>
+            <div className={pageContentClass}>
+              <div className="flex">
+                <button
+                  type="button"
+                  onClick={() => handleTabChange('tasks')}
+                  className={`px-4 py-2.5 text-[14px] font-normal leading-5 transition-colors relative ${
+                    activeTab === 'tasks' ? 'text-foreground' : 'text-secondary hover:text-foreground'
+                  }`}
+                >
+                  {i18nService.t('scheduledTasksTabTasks')}
+                  {activeTab === 'tasks' && (
+                    <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-t" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleTabChange('history')}
+                  className={`px-4 py-2.5 text-[14px] font-normal leading-5 transition-colors relative ${
+                    activeTab === 'history' ? 'text-foreground' : 'text-secondary hover:text-foreground'
+                  }`}
+                >
+                  {i18nService.t('scheduledTasksTabHistory')}
+                  {activeTab === 'history' && (
+                    <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-t" />
+                  )}
+                </button>
+              </div>
               {activeTab === 'tasks' && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-t" />
+                <button
+                  type="button"
+                  onClick={() => dispatch(setViewMode('create'))}
+                  className="px-3 py-1 text-[14px] font-normal leading-5 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+                >
+                  {i18nService.t('scheduledTasksNewTask')}
+                </button>
               )}
-            </button>
-            <button
-              type="button"
-              onClick={() => handleTabChange('history')}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
-                activeTab === 'history'
-                  ? 'text-foreground'
-                  : 'text-secondary hover:hover:text-foreground'
-              }`}
-            >
-              {i18nService.t('scheduledTasksTabHistory')}
-              {activeTab === 'history' && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-t" />
-              )}
-            </button>
+            </div>
           </div>
-          {activeTab === 'tasks' && (
-            <button
-              type="button"
-              onClick={() => dispatch(setViewMode('create'))}
-              className="px-3 py-1 text-sm font-medium bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
-            >
-              {i18nService.t('scheduledTasksNewTask')}
-            </button>
-          )}
         </div>
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div
+        className={`flex-1 min-h-0 ${viewMode === 'create' || viewMode === 'edit' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}
+      >
         {showTabs && activeTab === 'history' ? (
           <AllRunsHistory />
         ) : (
@@ -204,7 +210,14 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
               <TaskForm
                 mode="create"
                 onCancel={handleBackToList}
-                onSaved={handleBackToList}
+                onSaved={newTaskId => {
+                  if (newTaskId) {
+                    dispatch(selectTask(newTaskId));
+                    dispatch(setViewMode('detail'));
+                  } else {
+                    handleBackToList();
+                  }
+                }}
                 onDirtyChange={handleFormDirtyChange}
               />
             )}
@@ -239,15 +252,13 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
           <div
             role="dialog"
             aria-modal="true"
-            onClick={(e) => e.stopPropagation()}
+            onClick={e => e.stopPropagation()}
             className="w-full max-w-sm rounded-2xl bg-background border-border border shadow-modal p-5"
           >
             <h4 className="text-sm font-semibold text-foreground mb-2">
               {i18nService.t('taskFormUnsavedChanges')}
             </h4>
-            <p className="text-sm text-secondary mb-4">
-              {i18nService.t('taskFormLeaveConfirm')}
-            </p>
+            <p className="text-sm text-secondary mb-4">{i18nService.t('taskFormLeaveConfirm')}</p>
             <div className="flex justify-end gap-3">
               <button
                 type="button"

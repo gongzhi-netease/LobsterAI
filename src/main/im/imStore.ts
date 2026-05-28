@@ -3,21 +3,29 @@
  * SQLite operations for IM configuration storage
  */
 
+import { randomUUID } from 'node:crypto';
+
 import Database from 'better-sqlite3';
 
 import { PlatformRegistry } from '../../shared/platform';
 import {
   DEFAULT_DINGTALK_MULTI_INSTANCE_CONFIG,
   DEFAULT_DINGTALK_OPENCLAW_CONFIG,
+  DEFAULT_DISCORD_MULTI_INSTANCE_CONFIG,
   DEFAULT_DISCORD_OPENCLAW_CONFIG,
+  DEFAULT_EMAIL_INSTANCE_CONFIG,
+  DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG,
   DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG,
   DEFAULT_FEISHU_OPENCLAW_CONFIG,
   DEFAULT_IM_SETTINGS,
   DEFAULT_NETEASE_BEE_CONFIG,
   DEFAULT_NIM_CONFIG,
+  DEFAULT_NIM_MULTI_INSTANCE_CONFIG,
   DEFAULT_POPO_CONFIG,
+  DEFAULT_POPO_MULTI_INSTANCE_CONFIG,
   DEFAULT_QQ_CONFIG,
   DEFAULT_QQ_MULTI_INSTANCE_CONFIG,
+  DEFAULT_TELEGRAM_MULTI_INSTANCE_CONFIG,
   DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
   DEFAULT_WECOM_CONFIG,
   DEFAULT_WECOM_MULTI_INSTANCE_CONFIG,
@@ -25,7 +33,11 @@ import {
   DingTalkInstanceConfig,
   DingTalkMultiInstanceConfig,
   DingTalkOpenClawConfig,
+  DiscordInstanceConfig,
+  DiscordMultiInstanceConfig,
   DiscordOpenClawConfig,
+  EmailInstanceConfig,
+  EmailMultiInstanceConfig,
   FeishuInstanceConfig,
   FeishuMultiInstanceConfig,
   FeishuOpenClawConfig,
@@ -34,11 +46,17 @@ import {
   IMSettings,
   NeteaseBeeChanConfig,
   NimConfig,
+  NimInstanceConfig,
+  NimMultiInstanceConfig,
   Platform,
+  PopoInstanceConfig,
+  PopoMultiInstanceConfig,
   PopoOpenClawConfig,
   QQConfig,
   QQInstanceConfig,
   QQMultiInstanceConfig,
+  TelegramInstanceConfig,
+  TelegramMultiInstanceConfig,
   TelegramOpenClawConfig,
   WecomInstanceConfig,
   WecomMultiInstanceConfig,
@@ -57,8 +75,30 @@ interface SessionMappingRow {
   platform: string;
   cowork_session_id: string;
   agent_id: string;
+  openclaw_session_key?: string | null;
   created_at: number;
   last_active_at: number;
+}
+
+function deriveNimRuntimeAccountIdForInstance(
+  inst: Pick<NimInstanceConfig, 'nimToken' | 'appKey' | 'account'>,
+): string | null {
+  const nimToken = inst.nimToken?.trim();
+  if (nimToken) {
+    const delimiter = nimToken.includes('|') ? '|' : '-';
+    const parts = nimToken.split(delimiter).map((part) => part.trim());
+    if (parts.length === 3 && parts[0] && parts[1]) {
+      return `${parts[0]}:${parts[1]}`;
+    }
+  }
+  if (inst.appKey?.trim() && inst.account?.trim()) {
+    return `${inst.appKey.trim()}:${inst.account.trim()}`;
+  }
+  return null;
+}
+
+function normalizeNimLegacyConversationPrefix(runtimeAccountId: string): string {
+  return runtimeAccountId.replace(/:/g, '-');
 }
 
 export class IMStore {
@@ -91,6 +131,7 @@ export class IMStore {
         im_conversation_id TEXT NOT NULL,
         platform TEXT NOT NULL,
         cowork_session_id TEXT NOT NULL,
+        openclaw_session_key TEXT,
         created_at INTEGER NOT NULL,
         last_active_at INTEGER NOT NULL,
         PRIMARY KEY (im_conversation_id, platform)
@@ -103,10 +144,15 @@ export class IMStore {
     const mappingCols = this.db.pragma('table_info(im_session_mappings)') as Array<{
       name: string;
     }>;
-    const mappingColNames = mappingCols.map((r) => r.name);
+    const mappingColNames = mappingCols.map(r => r.name);
     if (!mappingColNames.includes('agent_id')) {
       this.db
         .prepare("ALTER TABLE im_session_mappings ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'")
+        .run();
+    }
+    if (!mappingColNames.includes('openclaw_session_key')) {
+      this.db
+        .prepare('ALTER TABLE im_session_mappings ADD COLUMN openclaw_session_key TEXT')
         .run();
     }
   }
@@ -216,6 +262,59 @@ export class IMStore {
       }
     }
 
+    // Migrate single telegramOpenClaw config to multi-instance format
+    const oldTelegramSingleRow = this.db
+      .prepare('SELECT value FROM im_config WHERE key = ?')
+      .get('telegramOpenClaw') as { value: string } | undefined;
+    const existingTelegramInstances = this.db
+      .prepare('SELECT key FROM im_config WHERE key LIKE ?')
+      .all('telegram:%') as Array<{ key: string }>;
+    if (oldTelegramSingleRow && !existingTelegramInstances.length) {
+      try {
+        const oldConfig = JSON.parse(oldTelegramSingleRow.value) as TelegramOpenClawConfig;
+        const instanceId = randomUUID();
+        const instanceConfig: TelegramInstanceConfig = {
+          ...DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
+          ...oldConfig,
+          instanceId,
+          instanceName: 'Telegram Bot 1',
+        };
+        const now = Date.now();
+        this.db
+          .prepare(
+            'INSERT INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+          )
+          .run(`telegram:${instanceId}`, JSON.stringify(instanceConfig), now);
+        this.db.prepare('DELETE FROM im_config WHERE key = ?').run('telegramOpenClaw');
+        // Migrate session mappings
+        this.db
+          .prepare('UPDATE im_session_mappings SET platform = ? WHERE platform = ?')
+          .run(`telegram:${instanceId}`, 'telegram');
+        // Migrate agent bindings
+        const settingsRow = this.db
+          .prepare('SELECT value FROM im_config WHERE key = ?')
+          .get('settings') as { value: string } | undefined;
+        if (settingsRow) {
+          try {
+            const settings = JSON.parse(settingsRow.value) as IMSettings;
+            if (settings.platformAgentBindings?.['telegram']) {
+              settings.platformAgentBindings[`telegram:${instanceId}`] =
+                settings.platformAgentBindings['telegram'];
+              delete settings.platformAgentBindings['telegram'];
+              this.db
+                .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
+                .run(JSON.stringify(settings), now, 'settings');
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        }
+        console.log('[IMStore] Migrated single Telegram config to multi-instance format');
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
     // Migrate old native Discord config to new OpenClaw format
     const oldDiscordRow = this.db
       .prepare('SELECT value FROM im_config WHERE key = ?')
@@ -244,6 +343,59 @@ export class IMStore {
           this.db.prepare('DELETE FROM im_config WHERE key = ?').run('discord');
           console.log('[IMStore] Migrated old Discord config to OpenClaw format');
         }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    // Migrate single discordOpenClaw config to multi-instance format
+    const oldDiscordSingleRow = this.db
+      .prepare('SELECT value FROM im_config WHERE key = ?')
+      .get('discordOpenClaw') as { value: string } | undefined;
+    const existingDiscordInstances = this.db
+      .prepare('SELECT key FROM im_config WHERE key LIKE ?')
+      .all('discord:%') as Array<{ key: string }>;
+    if (oldDiscordSingleRow && !existingDiscordInstances.length) {
+      try {
+        const oldConfig = JSON.parse(oldDiscordSingleRow.value) as DiscordOpenClawConfig;
+        const instanceId = randomUUID();
+        const instanceConfig: DiscordInstanceConfig = {
+          ...DEFAULT_DISCORD_OPENCLAW_CONFIG,
+          ...oldConfig,
+          instanceId,
+          instanceName: 'Discord Bot 1',
+        };
+        const now = Date.now();
+        this.db
+          .prepare(
+            'INSERT INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+          )
+          .run(`discord:${instanceId}`, JSON.stringify(instanceConfig), now);
+        this.db.prepare('DELETE FROM im_config WHERE key = ?').run('discordOpenClaw');
+        // Migrate session mappings
+        this.db
+          .prepare('UPDATE im_session_mappings SET platform = ? WHERE platform = ?')
+          .run(`discord:${instanceId}`, 'discord');
+        // Migrate agent bindings
+        const settingsRow4 = this.db
+          .prepare('SELECT value FROM im_config WHERE key = ?')
+          .get('settings') as { value: string } | undefined;
+        if (settingsRow4) {
+          try {
+            const settings = JSON.parse(settingsRow4.value) as IMSettings;
+            if (settings.platformAgentBindings?.['discord']) {
+              settings.platformAgentBindings[`discord:${instanceId}`] =
+                settings.platformAgentBindings['discord'];
+              delete settings.platformAgentBindings['discord'];
+              this.db
+                .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
+                .run(JSON.stringify(settings), now, 'settings');
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        }
+        console.log('[IMStore] Migrated single Discord config to multi-instance format');
       } catch {
         // Ignore parse errors
       }
@@ -375,6 +527,57 @@ export class IMStore {
             '[IMStore] Migrated popo config: inferred connectionMode=webhook from existing token',
           );
         }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    // Migrate single popo config to multi-instance format
+    const oldPopoSingleRow = this.db
+      .prepare('SELECT value FROM im_config WHERE key = ?')
+      .get('popo') as { value: string } | undefined;
+    const existingPopoInstances = this.db
+      .prepare('SELECT key FROM im_config WHERE key LIKE ?')
+      .all('popo:%') as Array<{ key: string }>;
+    if (oldPopoSingleRow && !existingPopoInstances.length) {
+      try {
+        const oldPopoConfig = JSON.parse(oldPopoSingleRow.value) as PopoOpenClawConfig;
+        const popoInstanceId = randomUUID();
+        const popoInstanceConfig: PopoInstanceConfig = {
+          ...DEFAULT_POPO_CONFIG,
+          ...oldPopoConfig,
+          instanceId: popoInstanceId,
+          instanceName: 'POPO Bot 1',
+        };
+        const now = Date.now();
+        this.db
+          .prepare('INSERT INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
+          .run(`popo:${popoInstanceId}`, JSON.stringify(popoInstanceConfig), now);
+        this.db.prepare('DELETE FROM im_config WHERE key = ?').run('popo');
+        // Migrate session mappings
+        this.db
+          .prepare('UPDATE im_session_mappings SET platform = ? WHERE platform = ?')
+          .run(`popo:${popoInstanceId}`, 'popo');
+        // Migrate agent bindings
+        const settingsRowPopo = this.db
+          .prepare('SELECT value FROM im_config WHERE key = ?')
+          .get('settings') as { value: string } | undefined;
+        if (settingsRowPopo) {
+          try {
+            const settings = JSON.parse(settingsRowPopo.value) as IMSettings;
+            if (settings.platformAgentBindings?.['popo']) {
+              settings.platformAgentBindings[`popo:${popoInstanceId}`] =
+                settings.platformAgentBindings['popo'];
+              delete settings.platformAgentBindings['popo'];
+              this.db
+                .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
+                .run(JSON.stringify(settings), now, 'settings');
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        }
+        console.log('[IMStore] Migrated single POPO config to multi-instance format');
       } catch {
         // Ignore parse errors
       }
@@ -623,21 +826,18 @@ export class IMStore {
 
   getConfig(): IMGatewayConfig {
     const dingtalkMulti = this.getDingTalkMultiInstanceConfig();
-    const telegram =
-      this.getConfigValue<TelegramOpenClawConfig>('telegramOpenClaw') ??
-      DEFAULT_TELEGRAM_OPENCLAW_CONFIG;
-    const discord =
-      this.getConfigValue<DiscordOpenClawConfig>('discordOpenClaw') ??
-      DEFAULT_DISCORD_OPENCLAW_CONFIG;
-    const nimConfig = this.getConfigValue<NimConfig>('nim') ?? DEFAULT_NIM_CONFIG;
+    const telegramMulti = this.getTelegramMultiInstanceConfig();
+    const discordMulti = this.getDiscordMultiInstanceConfig();
+    const nimMulti = this.getNimMultiInstanceConfig();
     const neteaseBeeChan =
       this.getConfigValue<NeteaseBeeChanConfig>('netease-bee') ?? DEFAULT_NETEASE_BEE_CONFIG;
     const qqMulti = this.getQQMultiInstanceConfig();
     const feishuMulti = this.getFeishuMultiInstanceConfig();
     const wecomMulti = this.getWecomMultiInstanceConfig();
-    const popo = this.getConfigValue<PopoOpenClawConfig>('popo') ?? DEFAULT_POPO_CONFIG;
+    const popoMulti = this.getPopoMultiInstanceConfig();
     const weixin = this.getConfigValue<WeixinOpenClawConfig>('weixin') ?? DEFAULT_WEIXIN_CONFIG;
     const settings = this.getConfigValue<IMSettings>('settings') ?? DEFAULT_IM_SETTINGS;
+    const email = this.getEmailConfig();
 
     // Resolve enabled field: default to false for safety
     // User must explicitly enable the service by setting enabled: true
@@ -653,14 +853,15 @@ export class IMStore {
     return {
       dingtalk: dingtalkMulti,
       feishu: feishuMulti,
-      telegram: resolveEnabled(telegram, DEFAULT_TELEGRAM_OPENCLAW_CONFIG),
-      discord: resolveEnabled(discord, DEFAULT_DISCORD_OPENCLAW_CONFIG),
-      nim: resolveEnabled(nimConfig, DEFAULT_NIM_CONFIG),
+      telegram: telegramMulti,
+      discord: discordMulti,
+      nim: nimMulti,
       'netease-bee': resolveEnabled(neteaseBeeChan, DEFAULT_NETEASE_BEE_CONFIG),
       qq: qqMulti,
       wecom: wecomMulti,
-      popo: resolveEnabled(popo, DEFAULT_POPO_CONFIG),
+      popo: popoMulti,
       weixin: resolveEnabled(weixin, DEFAULT_WEIXIN_CONFIG),
+      email,
       settings: { ...DEFAULT_IM_SETTINGS, ...settings },
     };
   }
@@ -673,13 +874,13 @@ export class IMStore {
       this.setFeishuMultiInstanceConfig(config.feishu);
     }
     if (config.telegram) {
-      this.setTelegramOpenClawConfig(config.telegram);
+      this.setTelegramMultiInstanceConfig(config.telegram);
     }
     if (config.discord) {
-      this.setDiscordOpenClawConfig(config.discord);
+      this.setDiscordMultiInstanceConfig(config.discord);
     }
     if (config.nim) {
-      this.setNimConfig(config.nim);
+      this.setNimMultiInstanceConfig(config.nim);
     }
     if (config['netease-bee']) {
       this.setNeteaseBeeChanConfig(config['netease-bee']);
@@ -691,10 +892,13 @@ export class IMStore {
       this.setWecomMultiInstanceConfig(config.wecom);
     }
     if (config.popo) {
-      this.setPopoConfig(config.popo);
+      this.setPopoMultiInstanceConfig(config.popo);
     }
     if (config.weixin) {
       this.setWeixinConfig(config.weixin);
+    }
+    if (config.email) {
+      this.setEmailConfig(config.email);
     }
     if (config.settings) {
       this.setIMSettings(config.settings);
@@ -855,17 +1059,88 @@ export class IMStore {
 
   // ==================== Discord OpenClaw Config ====================
 
+  /** @deprecated Use getDiscordMultiInstanceConfig() or getDiscordInstances() instead */
   getDiscordOpenClawConfig(): DiscordOpenClawConfig {
     const stored = this.getConfigValue<DiscordOpenClawConfig>('discordOpenClaw');
     return { ...DEFAULT_DISCORD_OPENCLAW_CONFIG, ...stored };
   }
 
+  /** @deprecated Use setDiscordInstanceConfig() instead */
   setDiscordOpenClawConfig(config: Partial<DiscordOpenClawConfig>): void {
     const current = this.getDiscordOpenClawConfig();
     this.setConfigValue('discordOpenClaw', { ...current, ...config });
   }
 
+  // ==================== Discord Multi-Instance Config ====================
+
+  getDiscordInstances(): DiscordInstanceConfig[] {
+    const rows = this.db
+      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
+      .all('discord:%') as Array<{ key: string; value: string }>;
+    if (!rows.length) return [];
+    const instances: DiscordInstanceConfig[] = [];
+    for (const row of rows) {
+      try {
+        const config = JSON.parse(row.value) as DiscordInstanceConfig;
+        instances.push({ ...DEFAULT_DISCORD_OPENCLAW_CONFIG, ...config });
+      } catch {
+        // Ignore parse errors
+      }
+    }
+    return instances;
+  }
+
+  getDiscordInstanceConfig(instanceId: string): DiscordInstanceConfig | null {
+    const stored = this.getConfigValue<DiscordInstanceConfig>(`discord:${instanceId}`);
+    if (!stored) return null;
+    return { ...DEFAULT_DISCORD_OPENCLAW_CONFIG, ...stored };
+  }
+
+  setDiscordInstanceConfig(instanceId: string, config: Partial<DiscordInstanceConfig>): void {
+    const current = this.getDiscordInstanceConfig(instanceId);
+    if (current) {
+      this.setConfigValue(`discord:${instanceId}`, { ...current, ...config });
+    } else {
+      this.setConfigValue(`discord:${instanceId}`, {
+        ...DEFAULT_DISCORD_OPENCLAW_CONFIG,
+        instanceId,
+        instanceName: config.instanceName || 'Discord Bot',
+        ...config,
+      });
+    }
+  }
+
+  deleteDiscordInstance(instanceId: string): void {
+    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`discord:${instanceId}`);
+    this.db.prepare('DELETE FROM im_session_mappings WHERE platform = ?').run(`discord:${instanceId}`);
+  }
+
+  getDiscordMultiInstanceConfig(): DiscordMultiInstanceConfig {
+    const instances = this.getDiscordInstances();
+    if (instances.length === 0) return DEFAULT_DISCORD_MULTI_INSTANCE_CONFIG;
+    return { instances };
+  }
+
+  setDiscordMultiInstanceConfig(config: DiscordMultiInstanceConfig): void {
+    for (const inst of config.instances) {
+      this.setDiscordInstanceConfig(inst.instanceId, inst);
+    }
+  }
+
   // ==================== NIM Config ====================
+
+  private hasMeaningfulNimConfig(config: Partial<NimConfig> | null | undefined): config is NimConfig {
+    return Boolean(config && (config.nimToken || (config.appKey && config.account && config.token)));
+  }
+
+  private buildMigratedNimInstance(config: NimConfig): NimInstanceConfig {
+    return {
+      ...DEFAULT_NIM_CONFIG,
+      ...config,
+      instanceId: randomUUID(),
+      instanceName: 'NIM Bot 1',
+    };
+  }
 
   getNimConfig(): NimConfig {
     const stored = this.getConfigValue<NimConfig>('nim');
@@ -875,6 +1150,85 @@ export class IMStore {
   setNimConfig(config: Partial<NimConfig>): void {
     const current = this.getNimConfig();
     this.setConfigValue('nim', { ...current, ...config });
+  }
+
+  private deleteLegacyNimConfig(): void {
+    this.db.prepare('DELETE FROM im_config WHERE key = ?').run('nim');
+  }
+
+  getNimInstances(): NimInstanceConfig[] {
+    const rows = this.db
+      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
+      .all('nim:%') as Array<{ key: string; value: string }>;
+    if (rows.length > 0) {
+      const instances: NimInstanceConfig[] = [];
+      for (const row of rows) {
+        try {
+          const config = JSON.parse(row.value) as NimInstanceConfig;
+          instances.push({ ...DEFAULT_NIM_CONFIG, ...config });
+        } catch {
+          // Ignore parse errors
+        }
+      }
+      return instances;
+    }
+
+    const legacy = this.getConfigValue<NimConfig>('nim');
+    if (!this.hasMeaningfulNimConfig(legacy)) {
+      return [];
+    }
+
+    const migrated = this.buildMigratedNimInstance(legacy);
+    this.setNimInstanceConfig(migrated.instanceId, migrated);
+    return [migrated];
+  }
+
+  getNimInstanceConfig(instanceId: string): NimInstanceConfig | null {
+    const stored = this.getConfigValue<NimInstanceConfig>(`nim:${instanceId}`);
+    if (!stored) return null;
+    return { ...DEFAULT_NIM_CONFIG, ...stored };
+  }
+
+  setNimInstanceConfig(instanceId: string, config: Partial<NimInstanceConfig>): void {
+    this.deleteLegacyNimConfig();
+    const current = this.getNimInstanceConfig(instanceId);
+    if (current) {
+      this.setConfigValue(`nim:${instanceId}`, { ...current, ...config });
+      return;
+    }
+    this.setConfigValue(`nim:${instanceId}`, {
+      ...DEFAULT_NIM_CONFIG,
+      instanceId,
+      instanceName: config.instanceName || 'NIM Bot',
+      ...config,
+    });
+  }
+
+  deleteNimInstance(instanceId: string): void {
+    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`nim:${instanceId}`);
+    this.db.prepare('DELETE FROM im_session_mappings WHERE platform = ?').run(`nim:${instanceId}`);
+    if (this.getNimInstances().length === 0) {
+      this.deleteLegacyNimConfig();
+    }
+  }
+
+  getNimMultiInstanceConfig(): NimMultiInstanceConfig {
+    const instances = this.getNimInstances();
+    if (instances.length === 0) return DEFAULT_NIM_MULTI_INSTANCE_CONFIG;
+    return { instances };
+  }
+
+  setNimMultiInstanceConfig(config: NimMultiInstanceConfig): void {
+    this.deleteLegacyNimConfig();
+    const nextIds = new Set(config.instances.map((inst) => inst.instanceId));
+    for (const inst of this.getNimInstances()) {
+      if (!nextIds.has(inst.instanceId)) {
+        this.deleteNimInstance(inst.instanceId);
+      }
+    }
+    for (const inst of config.instances) {
+      this.setNimInstanceConfig(inst.instanceId, inst);
+    }
   }
 
   // ==================== NeteaseBee Chan Config ====================
@@ -891,14 +1245,72 @@ export class IMStore {
 
   // ==================== Telegram OpenClaw Config ====================
 
+  /** @deprecated Use getTelegramMultiInstanceConfig() or getTelegramInstances() instead */
   getTelegramOpenClawConfig(): TelegramOpenClawConfig {
     const stored = this.getConfigValue<TelegramOpenClawConfig>('telegramOpenClaw');
     return { ...DEFAULT_TELEGRAM_OPENCLAW_CONFIG, ...stored };
   }
 
+  /** @deprecated Use setTelegramInstanceConfig() instead */
   setTelegramOpenClawConfig(config: Partial<TelegramOpenClawConfig>): void {
     const current = this.getTelegramOpenClawConfig();
     this.setConfigValue('telegramOpenClaw', { ...current, ...config });
+  }
+
+  // ==================== Telegram Multi-Instance Config ====================
+
+  getTelegramInstances(): TelegramInstanceConfig[] {
+    const rows = this.db
+      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
+      .all('telegram:%') as Array<{ key: string; value: string }>;
+    if (!rows.length) return [];
+    const instances: TelegramInstanceConfig[] = [];
+    for (const row of rows) {
+      try {
+        const config = JSON.parse(row.value) as TelegramInstanceConfig;
+        instances.push({ ...DEFAULT_TELEGRAM_OPENCLAW_CONFIG, ...config });
+      } catch {
+        // Ignore parse errors
+      }
+    }
+    return instances;
+  }
+
+  getTelegramInstanceConfig(instanceId: string): TelegramInstanceConfig | null {
+    const stored = this.getConfigValue<TelegramInstanceConfig>(`telegram:${instanceId}`);
+    if (!stored) return null;
+    return { ...DEFAULT_TELEGRAM_OPENCLAW_CONFIG, ...stored };
+  }
+
+  setTelegramInstanceConfig(instanceId: string, config: Partial<TelegramInstanceConfig>): void {
+    const current = this.getTelegramInstanceConfig(instanceId);
+    if (current) {
+      this.setConfigValue(`telegram:${instanceId}`, { ...current, ...config });
+    } else {
+      this.setConfigValue(`telegram:${instanceId}`, {
+        ...DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
+        instanceId,
+        instanceName: config.instanceName || 'Telegram Bot',
+        ...config,
+      });
+    }
+  }
+
+  deleteTelegramInstance(instanceId: string): void {
+    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`telegram:${instanceId}`);
+    this.db.prepare('DELETE FROM im_session_mappings WHERE platform = ?').run(`telegram:${instanceId}`);
+  }
+
+  getTelegramMultiInstanceConfig(): TelegramMultiInstanceConfig {
+    const instances = this.getTelegramInstances();
+    if (instances.length === 0) return DEFAULT_TELEGRAM_MULTI_INSTANCE_CONFIG;
+    return { instances };
+  }
+
+  setTelegramMultiInstanceConfig(config: TelegramMultiInstanceConfig): void {
+    for (const inst of config.instances) {
+      this.setTelegramInstanceConfig(inst.instanceId, inst);
+    }
   }
 
   // ==================== QQ Multi-Instance Config ====================
@@ -1045,14 +1457,74 @@ export class IMStore {
 
   // ==================== POPO ====================
 
+  /** @deprecated Use getPopoMultiInstanceConfig() or getPopoInstances() instead */
   getPopoConfig(): PopoOpenClawConfig {
     const stored = this.getConfigValue<PopoOpenClawConfig>('popo');
     return { ...DEFAULT_POPO_CONFIG, ...stored };
   }
 
+  /** @deprecated Use setPopoInstanceConfig() instead */
   setPopoConfig(config: Partial<PopoOpenClawConfig>): void {
     const current = this.getPopoConfig();
     this.setConfigValue('popo', { ...current, ...config });
+  }
+
+  // ==================== POPO Multi-Instance Config ====================
+
+  getPopoInstances(): PopoInstanceConfig[] {
+    const rows = this.db
+      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
+      .all('popo:%') as Array<{ key: string; value: string }>;
+    if (!rows.length) return [];
+    const instances: PopoInstanceConfig[] = [];
+    for (const row of rows) {
+      try {
+        const config = JSON.parse(row.value) as PopoInstanceConfig;
+        instances.push({ ...DEFAULT_POPO_CONFIG, ...config });
+      } catch {
+        // Ignore parse errors
+      }
+    }
+    return instances;
+  }
+
+  getPopoInstanceConfig(instanceId: string): PopoInstanceConfig | null {
+    const stored = this.getConfigValue<PopoInstanceConfig>(`popo:${instanceId}`);
+    if (!stored) return null;
+    return { ...DEFAULT_POPO_CONFIG, ...stored };
+  }
+
+  setPopoInstanceConfig(instanceId: string, config: Partial<PopoInstanceConfig>): void {
+    const current = this.getPopoInstanceConfig(instanceId);
+    if (current) {
+      this.setConfigValue(`popo:${instanceId}`, { ...current, ...config });
+    } else {
+      this.setConfigValue(`popo:${instanceId}`, {
+        ...DEFAULT_POPO_CONFIG,
+        instanceId,
+        instanceName: config.instanceName || 'POPO Bot',
+        ...config,
+      });
+    }
+  }
+
+  deletePopoInstance(instanceId: string): void {
+    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`popo:${instanceId}`);
+    this.db
+      .prepare('DELETE FROM im_session_mappings WHERE platform = ?')
+      .run(`popo:${instanceId}`);
+  }
+
+  getPopoMultiInstanceConfig(): PopoMultiInstanceConfig {
+    const instances = this.getPopoInstances();
+    if (instances.length === 0) return DEFAULT_POPO_MULTI_INSTANCE_CONFIG;
+    return { instances };
+  }
+
+  setPopoMultiInstanceConfig(config: PopoMultiInstanceConfig): void {
+    for (const inst of config.instances) {
+      this.setPopoInstanceConfig(inst.instanceId, inst);
+    }
   }
 
   // ==================== Weixin (微信) ====================
@@ -1079,6 +1551,87 @@ export class IMStore {
     this.setConfigValue('settings', { ...current, ...settings });
   }
 
+  // ==================== Email Channel Config ====================
+
+  /**
+   * Get email channel multi-instance configuration
+   */
+  getEmailConfig(): EmailMultiInstanceConfig {
+    const raw = this.db.prepare('SELECT value FROM im_config WHERE key = ?').get('email') as
+      | { value: string }
+      | undefined;
+
+    if (!raw?.value) {
+      return DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG;
+    }
+
+    try {
+      const parsed = JSON.parse(raw.value);
+
+      // Migration logic: detect v1 format (single account) and convert to v2 (multi-instance)
+      if (parsed.email && !parsed.instances) {
+        console.log('[EmailChannel] Migrating from v1 config format');
+        return {
+          instances: [
+            {
+              instanceId: 'email-1',
+              instanceName: 'Default',
+              enabled: parsed.enabled ?? false,
+              transport: 'imap',
+              email: parsed.email,
+              password: parsed.password,
+              agentId: 'main',
+              ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+            },
+          ],
+        };
+      }
+
+      // v2 format: multi-instance mode
+      return {
+        instances: (parsed.instances || []).map((inst: any) => ({
+          ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+          ...inst,
+        })),
+      };
+    } catch (error) {
+      console.error('[EmailChannel] Failed to parse config:', error);
+      return DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG;
+    }
+  }
+
+  /**
+   * Set email channel multi-instance configuration
+   */
+  setEmailConfig(config: EmailMultiInstanceConfig): void {
+    this.setConfigValue('email', config);
+  }
+
+  setEmailInstanceConfig(instanceId: string, config: Partial<EmailInstanceConfig>): void {
+    const current = this.getEmailConfig();
+    const existing = current.instances.find(i => i.instanceId === instanceId);
+    if (existing) {
+      const updated = current.instances.map(i =>
+        i.instanceId === instanceId ? { ...i, ...config } : i,
+      );
+      this.setEmailConfig({ instances: updated });
+    } else {
+      this.setEmailConfig({
+        instances: [...current.instances, { ...DEFAULT_EMAIL_INSTANCE_CONFIG, ...config, instanceId } as EmailInstanceConfig],
+      });
+    }
+  }
+
+  deleteEmailInstance(instanceId: string): void {
+    const current = this.getEmailConfig();
+    const updated = current.instances.filter(i => i.instanceId !== instanceId);
+    this.setEmailConfig({ instances: updated });
+    // Clean up session mappings for this instance
+    this.db
+      .prepare('DELETE FROM im_session_mappings WHERE platform = ?')
+      .run(`email:${instanceId}`);
+  }
+
   // ==================== Utility ====================
 
   /**
@@ -1096,9 +1649,9 @@ export class IMStore {
     const hasDingTalk =
       config.dingtalk?.instances?.some(i => !!(i.clientId && i.clientSecret)) ?? false;
     const hasFeishu = config.feishu?.instances?.some(i => !!(i.appId && i.appSecret)) ?? false;
-    const hasTelegram = !!config.telegram.botToken;
-    const hasDiscord = !!config.discord.botToken;
-    const hasNim = !!(config.nim.appKey && config.nim.account && config.nim.token);
+    const hasTelegram = config.telegram?.instances?.some(i => !!i.botToken) ?? false;
+    const hasDiscord = config.discord?.instances?.some(i => !!i.botToken) ?? false;
+    const hasNim = config.nim?.instances?.some(i => !!(i.nimToken || (i.appKey && i.account && i.token))) ?? false;
     const hasNeteaseBeeChan = !!(config['netease-bee']?.clientId && config['netease-bee']?.secret);
     const hasQQ = config.qq?.instances?.some(i => !!(i.appId && i.appSecret)) ?? false;
     const hasWecom = config.wecom?.instances?.some(i => !!(i.botId && i.secret)) ?? false;
@@ -1165,7 +1718,7 @@ export class IMStore {
   getSessionMapping(imConversationId: string, platform: Platform): IMSessionMapping | null {
     const row = this.db
       .prepare(
-        'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE im_conversation_id = ? AND platform = ?',
+        'SELECT im_conversation_id, platform, cowork_session_id, agent_id, openclaw_session_key, created_at, last_active_at FROM im_session_mappings WHERE im_conversation_id = ? AND platform = ?',
       )
       .get(imConversationId, platform) as SessionMappingRow | undefined;
     if (!row) return null;
@@ -1174,6 +1727,7 @@ export class IMStore {
       platform: row.platform as Platform,
       coworkSessionId: row.cowork_session_id,
       agentId: row.agent_id || 'main',
+      ...(row.openclaw_session_key ? { openClawSessionKey: row.openclaw_session_key } : {}),
       createdAt: row.created_at,
       lastActiveAt: row.last_active_at,
     };
@@ -1185,7 +1739,7 @@ export class IMStore {
   getSessionMappingByCoworkSessionId(coworkSessionId: string): IMSessionMapping | null {
     const row = this.db
       .prepare(
-        'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE cowork_session_id = ? LIMIT 1',
+        'SELECT im_conversation_id, platform, cowork_session_id, agent_id, openclaw_session_key, created_at, last_active_at FROM im_session_mappings WHERE cowork_session_id = ? LIMIT 1',
       )
       .get(coworkSessionId) as SessionMappingRow | undefined;
     if (!row) return null;
@@ -1194,6 +1748,7 @@ export class IMStore {
       platform: row.platform as Platform,
       coworkSessionId: row.cowork_session_id,
       agentId: row.agent_id || 'main',
+      ...(row.openclaw_session_key ? { openClawSessionKey: row.openclaw_session_key } : {}),
       createdAt: row.created_at,
       lastActiveAt: row.last_active_at,
     };
@@ -1207,18 +1762,21 @@ export class IMStore {
     platform: Platform,
     coworkSessionId: string,
     agentId: string = 'main',
+    openClawSessionKey: string = '',
   ): IMSessionMapping {
     const now = Date.now();
+    const normalizedOpenClawSessionKey = openClawSessionKey.trim();
     this.db
       .prepare(
-        'INSERT INTO im_session_mappings (im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO im_session_mappings (im_conversation_id, platform, cowork_session_id, agent_id, openclaw_session_key, created_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(imConversationId, platform, coworkSessionId, agentId, now, now);
+      .run(imConversationId, platform, coworkSessionId, agentId, normalizedOpenClawSessionKey || null, now, now);
     return {
       imConversationId,
       platform,
       coworkSessionId,
       agentId,
+      ...(normalizedOpenClawSessionKey ? { openClawSessionKey: normalizedOpenClawSessionKey } : {}),
       createdAt: now,
       lastActiveAt: now,
     };
@@ -1245,13 +1803,32 @@ export class IMStore {
     platform: Platform,
     newCoworkSessionId: string,
     newAgentId: string,
+    newOpenClawSessionKey?: string,
   ): void {
+    const now = Date.now();
+    const normalizedOpenClawSessionKey = newOpenClawSessionKey?.trim() || null;
+    this.db
+      .prepare(
+        'UPDATE im_session_mappings SET cowork_session_id = ?, agent_id = ?, openclaw_session_key = COALESCE(?, openclaw_session_key), last_active_at = ? WHERE im_conversation_id = ? AND platform = ?',
+      )
+      .run(newCoworkSessionId, newAgentId, normalizedOpenClawSessionKey, now, imConversationId, platform);
+  }
+
+  updateSessionOpenClawSessionKey(
+    imConversationId: string,
+    platform: Platform,
+    openClawSessionKey: string,
+  ): void {
+    const normalizedKey = openClawSessionKey.trim();
+    if (!normalizedKey) {
+      return;
+    }
     const now = Date.now();
     this.db
       .prepare(
-        'UPDATE im_session_mappings SET cowork_session_id = ?, agent_id = ?, last_active_at = ? WHERE im_conversation_id = ? AND platform = ?',
+        'UPDATE im_session_mappings SET openclaw_session_key = ?, last_active_at = ? WHERE im_conversation_id = ? AND platform = ?',
       )
-      .run(newCoworkSessionId, newAgentId, now, imConversationId, platform);
+      .run(normalizedKey, now, imConversationId, platform);
   }
 
   /**
@@ -1277,28 +1854,47 @@ export class IMStore {
   /**
    * List all session mappings for a platform, optionally filtered by IM bot accountId.
    *
-   * The accountId is encoded as the first colon-delimited segment of im_conversation_id
-   * (e.g. "c9c41984:direct:ou_xxx" → accountId "c9c41984"). This convention is used by
-   * multi-instance platforms (Feishu, DingTalk, QQ) while single-instance platforms
-   * use "default" as the prefix. Filtering by accountId therefore requires no schema
-   * migration and is fully backward-compatible with existing rows.
+   * The accountId is encoded as the first segment of im_conversation_id before
+   * the peer subtype suffix (for example "c9c41984:direct:ou_xxx" or the legacy
+   * NIM form "appKey-account:direct:peer"). Filtering by accountId therefore
+   * requires no schema migration. NIM additionally accepts the current stable
+   * instance key and matches legacy runtime-derived prefixes for compatibility.
    */
   listSessionMappings(platform?: Platform, accountId?: string): IMSessionMapping[] {
     let query: string;
     let params: unknown[];
 
     if (platform && accountId) {
+      const directPrefixes = new Set<string>([accountId]);
+      if (platform === 'nim') {
+        for (const inst of this.getNimInstances()) {
+          const instanceKey = inst.instanceId?.slice(0, 8);
+          if (instanceKey !== accountId) continue;
+          const runtimeAccountId = deriveNimRuntimeAccountIdForInstance(inst);
+          if (runtimeAccountId) {
+            directPrefixes.add(normalizeNimLegacyConversationPrefix(runtimeAccountId));
+          }
+        }
+      }
+
       // Include direct conversations owned by this bot instance (prefix matches accountId)
       // and all group conversations for the platform, since group membership per-bot
       // is not yet stored — group: prefix is a temporary heuristic until im_account_id
       // column is introduced.
-      query = "SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE platform = ? AND (im_conversation_id LIKE ? OR im_conversation_id LIKE 'group:%') ORDER BY last_active_at DESC";
-      params = [platform, `${accountId}:%`];
+      const directClauses = Array.from(directPrefixes).map(() => 'im_conversation_id LIKE ?');
+      query = `SELECT im_conversation_id, platform, cowork_session_id, agent_id, openclaw_session_key, created_at, last_active_at
+        FROM im_session_mappings
+        WHERE platform = ?
+          AND (${directClauses.join(' OR ')} OR im_conversation_id LIKE 'group:%')
+        ORDER BY last_active_at DESC`;
+      params = [platform, ...Array.from(directPrefixes).map((prefix) => `${prefix}:%`)];
     } else if (platform) {
-      query = 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE platform = ? ORDER BY last_active_at DESC';
+      query =
+        'SELECT im_conversation_id, platform, cowork_session_id, agent_id, openclaw_session_key, created_at, last_active_at FROM im_session_mappings WHERE platform = ? ORDER BY last_active_at DESC';
       params = [platform];
     } else {
-      query = 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings ORDER BY last_active_at DESC';
+      query =
+        'SELECT im_conversation_id, platform, cowork_session_id, agent_id, openclaw_session_key, created_at, last_active_at FROM im_session_mappings ORDER BY last_active_at DESC';
       params = [];
     }
 
@@ -1308,6 +1904,7 @@ export class IMStore {
       platform: row.platform as Platform,
       coworkSessionId: row.cowork_session_id,
       agentId: row.agent_id || 'main',
+      ...(row.openclaw_session_key ? { openClawSessionKey: row.openclaw_session_key } : {}),
       createdAt: row.created_at,
       lastActiveAt: row.last_active_at,
     }));

@@ -1,5 +1,18 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { OpenClawSessionPatch } from '../../common/openclawSession';
+import type { AppUpdateCheckResult, AppUpdateRuntimeState } from '../../shared/appUpdate/constants';
+import type {
+  BrowserDiagnosticResult,
+  BrowserRuntimeProfile,
+} from '../../shared/browserWebAccess/constants';
+import type {
+  CoworkContextUsageFailureReason,
+  CoworkContextUsageSource,
+} from '../../shared/cowork/constants';
+import type { HtmlShareAccessMode, HtmlShareStatus } from '../../shared/htmlShare/constants';
+import type {
+  ListLocalWebServicesOptions,
+  LocalWebService,
+} from '../../shared/localWebServices/constants';
 interface ApiResponse {
   ok: boolean;
   status: number;
@@ -23,6 +36,7 @@ interface CoworkSession {
   claudeSessionId: string | null;
   status: 'idle' | 'running' | 'completed' | 'error';
   pinned: boolean;
+  pinOrder?: number | null;
   cwd: string;
   systemPrompt: string;
   modelOverride: string;
@@ -30,6 +44,8 @@ interface CoworkSession {
   activeSkillIds: string[];
   agentId: string;
   messages: CoworkMessage[];
+  messagesOffset: number;
+  totalMessages: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -47,8 +63,26 @@ interface CoworkSessionSummary {
   title: string;
   status: 'idle' | 'running' | 'completed' | 'error';
   pinned: boolean;
+  pinOrder?: number | null;
   agentId?: string;
   createdAt: number;
+  updatedAt: number;
+}
+
+type CoworkSessionStatus = 'idle' | 'running' | 'completed' | 'error';
+
+interface CoworkContextUsage {
+  sessionId: string;
+  sessionKey?: string;
+  usedTokens?: number;
+  contextTokens?: number;
+  percent?: number;
+  compactionCount?: number;
+  status: 'unknown' | 'normal' | 'warning' | 'danger' | 'compacting';
+  latestCompactionCheckpointId?: string;
+  latestCompactionReason?: string;
+  latestCompactionCreatedAt?: number;
+  model?: string;
   updatedAt: number;
 }
 
@@ -63,21 +97,37 @@ interface CoworkConfig {
   memoryGuardLevel: 'strict' | 'standard' | 'relaxed';
   memoryUserMemoriesMaxItems: number;
   skipMissedJobs: boolean;
+  embeddingEnabled: boolean;
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingLocalModelPath: string;
+  embeddingVectorWeight: number;
+  embeddingRemoteBaseUrl: string;
+  embeddingRemoteApiKey: string;
   openClawSessionPolicy: OpenClawSessionPolicyConfig;
 }
 
-type CoworkConfigUpdate = Partial<Pick<
-  CoworkConfig,
-  | 'workingDirectory'
-  | 'executionMode'
-  | 'agentEngine'
-  | 'memoryEnabled'
-  | 'memoryImplicitUpdateEnabled'
-  | 'memoryLlmJudgeEnabled'
-  | 'memoryGuardLevel'
-  | 'memoryUserMemoriesMaxItems'
-  | 'skipMissedJobs'
->>;
+type CoworkConfigUpdate = Partial<
+  Pick<
+    CoworkConfig,
+    | 'workingDirectory'
+    | 'executionMode'
+    | 'agentEngine'
+    | 'memoryEnabled'
+    | 'memoryImplicitUpdateEnabled'
+    | 'memoryLlmJudgeEnabled'
+    | 'memoryGuardLevel'
+    | 'memoryUserMemoriesMaxItems'
+    | 'skipMissedJobs'
+    | 'embeddingEnabled'
+    | 'embeddingProvider'
+    | 'embeddingModel'
+    | 'embeddingLocalModelPath'
+    | 'embeddingVectorWeight'
+    | 'embeddingRemoteBaseUrl'
+    | 'embeddingRemoteApiKey'
+  >
+>;
 
 interface CoworkUserMemoryEntry {
   id: string;
@@ -126,13 +176,6 @@ interface OpenClawEngineStatus {
 
 interface OpenClawSessionPolicyConfig {
   keepAlive: '1d' | '7d' | '30d' | '365d';
-}
-
-interface AppUpdateDownloadProgress {
-  received: number;
-  total: number | undefined;
-  percent: number | undefined;
-  speed: number | undefined;
 }
 
 interface WindowState {
@@ -246,6 +289,21 @@ interface ProfileSummaryData {
   creditItems: CreditItem[];
 }
 
+interface HtmlShareResult {
+  success: boolean;
+  shareId?: string;
+  url?: string;
+  accessMode?: HtmlShareAccessMode;
+  shareCode?: string;
+  shareCodeUnavailable?: boolean;
+  status?: HtmlShareStatus;
+  updatedAt?: string;
+  contentUpdatedAt?: string;
+  error?: string;
+  code?: number;
+  warnings?: string[];
+}
+
 interface IElectronAPI {
   platform: string;
   arch: string;
@@ -256,39 +314,110 @@ interface IElectronAPI {
   };
   skills: {
     list: () => Promise<{ success: boolean; skills?: Skill[]; error?: string }>;
-    setEnabled: (options: { id: string; enabled: boolean }) => Promise<{ success: boolean; skills?: Skill[]; error?: string }>;
+    setEnabled: (options: {
+      id: string;
+      enabled: boolean;
+    }) => Promise<{ success: boolean; skills?: Skill[]; error?: string }>;
     delete: (id: string) => Promise<{ success: boolean; skills?: Skill[]; error?: string }>;
-    download: (source: string) => Promise<{ success: boolean; skills?: Skill[]; error?: string; auditReport?: any; pendingInstallId?: string }>;
-    upgrade: (skillId: string, downloadUrl: string) => Promise<{ success: boolean; skills?: Skill[]; error?: string; auditReport?: any; pendingInstallId?: string }>;
-    confirmInstall: (pendingId: string, action: string) => Promise<{ success: boolean; skills?: Skill[]; error?: string }>;
+    download: (source: string) => Promise<{
+      success: boolean;
+      skills?: Skill[];
+      error?: string;
+      auditReport?: any;
+      pendingInstallId?: string;
+    }>;
+    upgrade: (
+      skillId: string,
+      downloadUrl: string,
+    ) => Promise<{
+      success: boolean;
+      skills?: Skill[];
+      error?: string;
+      auditReport?: any;
+      pendingInstallId?: string;
+    }>;
+    confirmInstall: (
+      pendingId: string,
+      action: string,
+    ) => Promise<{ success: boolean; skills?: Skill[]; error?: string }>;
     getRoot: () => Promise<{ success: boolean; path?: string; error?: string }>;
     autoRoutingPrompt: () => Promise<{ success: boolean; prompt?: string | null; error?: string }>;
-    getConfig: (skillId: string) => Promise<{ success: boolean; config?: Record<string, string>; error?: string }>;
-    setConfig: (skillId: string, config: Record<string, string>) => Promise<{ success: boolean; error?: string }>;
+    getConfig: (
+      skillId: string,
+    ) => Promise<{ success: boolean; config?: Record<string, string>; error?: string }>;
+    setConfig: (
+      skillId: string,
+      config: Record<string, string>,
+    ) => Promise<{ success: boolean; error?: string }>;
     testEmailConnectivity: (
       skillId: string,
-      config: Record<string, string>
+      config: Record<string, string>,
     ) => Promise<{ success: boolean; result?: EmailConnectivityTestResult; error?: string }>;
+    fetchMarketplace: () => Promise<{ success: boolean; data?: string; error?: string }>;
+    detectFromOpenClaw: () => Promise<{
+      skills: Array<{ name: string; description: string; skillKey: string; baseDir: string }>;
+      error?: string;
+    }>;
+    syncFromOpenClaw: () => Promise<{ synced: string[]; error?: string }>;
+    refreshPluginSkillIds: () => Promise<{ success: boolean; pluginSkillIds?: string[]; error?: string }>;
     onChanged: (callback: () => void) => () => void;
   };
   mcp: {
     list: () => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
-    create: (data: any) => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
-    update: (id: string, data: any) => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
-    delete: (id: string) => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
-    setEnabled: (options: { id: string; enabled: boolean }) => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
-    fetchMarketplace: () => Promise<{ success: boolean; data?: McpMarketplaceData; error?: string }>;
-    refreshBridge: () => Promise<{ success: boolean; tools: number; error?: string }>;
-    onBridgeSyncStart: (callback: () => void) => () => void;
-    onBridgeSyncDone: (callback: (data: { tools: number; error?: string }) => void) => () => void;
+    create: (
+      data: any,
+    ) => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
+    update: (
+      id: string,
+      data: any,
+    ) => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
+    delete: (
+      id: string,
+    ) => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
+    setEnabled: (options: {
+      id: string;
+      enabled: boolean;
+    }) => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
+    fetchMarketplace: () => Promise<{
+      success: boolean;
+      data?: McpMarketplaceData;
+      error?: string;
+    }>;
   };
   agents: {
     list: () => Promise<Agent[]>;
     get: (id: string) => Promise<Agent | null>;
-    create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
-    update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; enabled?: boolean }) => Promise<Agent>;
-    delete: (id: string) => Promise<void>;
+    create: (request: {
+      id?: string;
+      name: string;
+      description?: string;
+      systemPrompt?: string;
+      identity?: string;
+      model?: string;
+      workingDirectory?: string;
+      icon?: string;
+      skillIds?: string[];
+      source?: string;
+      presetId?: string;
+    }) => Promise<Agent>;
+    update: (
+      id: string,
+      updates: {
+        name?: string;
+        description?: string;
+        systemPrompt?: string;
+        identity?: string;
+        model?: string;
+        workingDirectory?: string;
+        icon?: string;
+        skillIds?: string[];
+        enabled?: boolean;
+        pinned?: boolean;
+      },
+    ) => Promise<Agent>;
+    delete: (id: string) => Promise<boolean>;
     presets: () => Promise<PresetAgent[]>;
+    presetTemplates: () => Promise<PresetAgent[]>;
     addPreset: (presetId: string) => Promise<Agent>;
   };
   api: {
@@ -312,7 +441,9 @@ interface IElectronAPI {
     onStreamAbort: (requestId: string, callback: () => void) => () => void;
   };
   getApiConfig: () => Promise<CoworkApiConfig | null>;
-  checkApiConfig: (options?: { probeModel?: boolean }) => Promise<{ hasConfig: boolean; config: CoworkApiConfig | null; error?: string }>;
+  checkApiConfig: (options?: {
+    probeModel?: boolean;
+  }) => Promise<{ hasConfig: boolean; config: CoworkApiConfig | null; error?: string }>;
   saveApiConfig: (config: CoworkApiConfig) => Promise<{ success: boolean; error?: string }>;
   generateSessionTitle: (userInput: string | null) => Promise<string>;
   getRecentCwds: (limit?: number) => Promise<string[]>;
@@ -320,19 +451,39 @@ interface IElectronAPI {
     engine: {
       getStatus: () => Promise<{ success: boolean; status?: OpenClawEngineStatus; error?: string }>;
       install: () => Promise<{ success: boolean; status?: OpenClawEngineStatus; error?: string }>;
-      retryInstall: () => Promise<{ success: boolean; status?: OpenClawEngineStatus; error?: string }>;
-      restartGateway: () => Promise<{ success: boolean; status?: OpenClawEngineStatus; error?: string }>;
+      retryInstall: () => Promise<{
+        success: boolean;
+        status?: OpenClawEngineStatus;
+        error?: string;
+      }>;
+      restartGateway: () => Promise<{
+        success: boolean;
+        status?: OpenClawEngineStatus;
+        error?: string;
+      }>;
       onProgress: (callback: (status: OpenClawEngineStatus) => void) => () => void;
     };
     sessionPolicy: {
-      get: () => Promise<{ success: boolean; config?: OpenClawSessionPolicyConfig; error?: string }>;
-      set: (config: OpenClawSessionPolicyConfig) => Promise<{ success: boolean; config?: OpenClawSessionPolicyConfig; error?: string }>;
+      get: () => Promise<{
+        success: boolean;
+        config?: OpenClawSessionPolicyConfig;
+        error?: string;
+      }>;
+      set: (
+        config: OpenClawSessionPolicyConfig,
+      ) => Promise<{ success: boolean; config?: OpenClawSessionPolicyConfig; error?: string }>;
     };
     session: {
       patch: (options: {
         sessionId: string;
         patch: OpenClawSessionPatch;
       }) => Promise<{ success: boolean; session?: CoworkSession; error?: string }>;
+    };
+    browser: {
+      getStatus: (options?: { profile?: BrowserRuntimeProfile }) => Promise<{ success: boolean; status?: Record<string, unknown>; error?: string }>;
+      listProfiles: () => Promise<{ success: boolean; profiles?: unknown[]; error?: string }>;
+      test: (options?: { profile?: BrowserRuntimeProfile }) => Promise<BrowserDiagnosticResult>;
+      resetProfile: (options?: { profile?: BrowserRuntimeProfile }) => Promise<{ success: boolean; result?: Record<string, unknown>; error?: string }>;
     };
   };
   ipcRenderer: {
@@ -348,23 +499,103 @@ interface IElectronAPI {
     onStateChanged: (callback: (state: WindowState) => void) => () => void;
   };
   cowork: {
-    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; title?: string; activeSkillIds?: string[]; agentId?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
-    continueSession: (options: { sessionId: string; prompt: string; systemPrompt?: string; activeSkillIds?: string[]; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
+    startSession: (options: {
+      prompt: string;
+      cwd?: string;
+      systemPrompt?: string;
+      title?: string;
+      activeSkillIds?: string[];
+      agentId?: string;
+      imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>;
+      mediaSelection?: { mode: string; modelId?: string; modelName?: string; imageModelId?: string; videoModelId?: string };
+      mediaReferences?: Array<{ token: string; mediaType: string; index: number; fileId: string; fileName: string; mimeType: string; localPath?: string; remoteUrl?: string; dataUrl?: string; role?: string }>;
+    }) => Promise<{
+      success: boolean;
+      session?: CoworkSession;
+      error?: string;
+      code?: string;
+      engineStatus?: OpenClawEngineStatus;
+    }>;
+    continueSession: (options: {
+      sessionId: string;
+      prompt: string;
+      systemPrompt?: string;
+      activeSkillIds?: string[];
+      imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>;
+      mediaSelection?: { mode: string; modelId?: string; modelName?: string; imageModelId?: string; videoModelId?: string };
+      mediaReferences?: Array<{ token: string; mediaType: string; index: number; fileId: string; fileName: string; mimeType: string; localPath?: string; remoteUrl?: string; dataUrl?: string; role?: string }>;
+    }) => Promise<{
+      success: boolean;
+      session?: CoworkSession;
+      error?: string;
+      code?: string;
+      engineStatus?: OpenClawEngineStatus;
+    }>;
     stopSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSessions: (sessionIds: string[]) => Promise<{ success: boolean; error?: string }>;
-    setSessionPinned: (options: { sessionId: string; pinned: boolean }) => Promise<{ success: boolean; error?: string }>;
-    renameSession: (options: { sessionId: string; title: string }) => Promise<{ success: boolean; error?: string }>;
-    getSession: (sessionId: string) => Promise<{ success: boolean; session?: CoworkSession; error?: string }>;
-    remoteManaged: (sessionId: string) => Promise<{ success: boolean; remoteManaged: boolean; error?: string }>;
-    listSessions: (agentId?: string) => Promise<{ success: boolean; sessions?: CoworkSessionSummary[]; error?: string }>;
+    setSessionPinned: (options: {
+      sessionId: string;
+      pinned: boolean;
+    }) => Promise<{ success: boolean; pinOrder?: number | null; error?: string }>;
+    renameSession: (options: {
+      sessionId: string;
+      title: string;
+    }) => Promise<{ success: boolean; error?: string }>;
+    getSession: (
+      sessionId: string,
+    ) => Promise<{ success: boolean; session?: CoworkSession; error?: string }>;
+    remoteManaged: (
+      sessionId: string,
+    ) => Promise<{ success: boolean; remoteManaged: boolean; error?: string }>;
+    listSessions: (options?: { limit?: number; offset?: number; agentId?: string }) => Promise<{
+      success: boolean;
+      sessions?: CoworkSessionSummary[];
+      hasMore?: boolean;
+      error?: string;
+    }>;
+    getContextUsage: (
+      sessionId: string,
+    ) => Promise<{
+      success: boolean;
+      usage?: CoworkContextUsage | null;
+      source?: CoworkContextUsageSource;
+      reason?: CoworkContextUsageFailureReason;
+      error?: string;
+    }>;
+    compactContext: (
+      sessionId: string,
+    ) => Promise<{
+      success: boolean;
+      compacted?: boolean;
+      reason?: string;
+      usage?: CoworkContextUsage | null;
+      error?: string;
+    }>;
+    getSessionMessages: (options: {
+      sessionId: string;
+      limit?: number;
+      offset?: number;
+    }) => Promise<{
+      success: boolean;
+      messages?: CoworkMessage[];
+      offset?: number;
+      total?: number;
+      error?: string;
+    }>;
     exportResultImage: (options: {
       rect: { x: number; y: number; width: number; height: number };
       defaultFileName?: string;
     }) => Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
     captureImageChunk: (options: {
       rect: { x: number; y: number; width: number; height: number };
-    }) => Promise<{ success: boolean; width?: number; height?: number; pngBase64?: string; error?: string }>;
+    }) => Promise<{
+      success: boolean;
+      width?: number;
+      height?: number;
+      pngBase64?: string;
+      error?: string;
+    }>;
     saveResultImage: (options: {
       pngBase64: string;
       defaultFileName?: string;
@@ -374,7 +605,46 @@ interface IElectronAPI {
       defaultFileName?: string;
       fileExtension?: string;
     }) => Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
-    respondToPermission: (options: { requestId: string; result: CoworkPermissionResult }) => Promise<{ success: boolean; error?: string }>;
+    cancelMediaTask: (taskId: string) => Promise<{ success: boolean; message?: string }>;
+    getSubTaskHistory: (options: {
+      parentSessionId: string;
+      agentId: string;
+      sessionKey?: string;
+    }) => Promise<{
+      success: boolean;
+      messages?: Array<{
+        id: string;
+        type: 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'system';
+        content: string;
+        timestamp: number;
+        metadata?: {
+          toolName?: string;
+          toolInput?: Record<string, unknown>;
+          toolResult?: string;
+          toolUseId?: string | null;
+          isError?: boolean;
+          [key: string]: unknown;
+        };
+      }>;
+      error?: string;
+    }>;
+    listSubagentSessions: (parentSessionId: string) => Promise<{
+      success: boolean;
+      runs?: Array<{
+        id: string;
+        agentId: string | null;
+        task: string | null;
+        label: string | null;
+        sessionKey: string | null;
+        status: 'running' | 'done' | 'error';
+        createdAt: number;
+      }>;
+      error?: string;
+    }>;
+    respondToPermission: (options: {
+      requestId: string;
+      result: CoworkPermissionResult;
+    }) => Promise<{ success: boolean; error?: string }>;
     getConfig: () => Promise<{ success: boolean; config?: CoworkConfig; error?: string }>;
     setConfig: (config: CoworkConfigUpdate) => Promise<{ success: boolean; error?: string }>;
     listMemoryEntries: (input: {
@@ -391,27 +661,147 @@ interface IElectronAPI {
     }) => Promise<{ success: boolean; entry?: CoworkUserMemoryEntry; error?: string }>;
     deleteMemoryEntry: (input: { id: string }) => Promise<{ success: boolean; error?: string }>;
     getMemoryStats: () => Promise<{ success: boolean; stats?: CoworkMemoryStats; error?: string }>;
-    readBootstrapFile: (filename: string) => Promise<{ success: boolean; content: string; error?: string }>;
-    writeBootstrapFile: (filename: string, content: string) => Promise<{ success: boolean; error?: string }>;
-    onStreamMessage: (callback: (data: { sessionId: string; message: CoworkMessage }) => void) => () => void;
-    onStreamMessageUpdate: (callback: (data: { sessionId: string; messageId: string; content: string }) => void) => () => void;
-    onStreamPermission: (callback: (data: { sessionId: string; request: CoworkPermissionRequest }) => void) => () => void;
+    readBootstrapFile: (
+      filename: string,
+    ) => Promise<{ success: boolean; content: string; error?: string }>;
+    writeBootstrapFile: (
+      filename: string,
+      content: string,
+    ) => Promise<{ success: boolean; error?: string }>;
+    onStreamMessage: (
+      callback: (data: { sessionId: string; message: CoworkMessage; beforeMessageId?: string }) => void,
+    ) => () => void;
+    onStreamMessageUpdate: (
+      callback: (data: {
+        sessionId: string;
+        messageId: string;
+        content: string;
+        metadata?: Record<string, unknown>;
+      }) => void,
+    ) => () => void;
+    onMediaStatusPollUpdate?: (
+      callback: (data: { sessionId: string; toolCallId: string; details: Record<string, unknown> }) => void,
+    ) => () => void;
+    onStreamSessionStatus: (
+      callback: (data: { sessionId: string; status: CoworkSessionStatus }) => void,
+    ) => () => void;
+    onStreamContextUsage?: (
+      callback: (data: { sessionId: string; usage: CoworkContextUsage }) => void,
+    ) => () => void;
+    onStreamContextMaintenance?: (
+      callback: (data: { sessionId: string; active: boolean }) => void,
+    ) => () => void;
+    onStreamPermission: (
+      callback: (data: { sessionId: string; request: CoworkPermissionRequest }) => void,
+    ) => () => void;
     onStreamPermissionDismiss: (callback: (data: { requestId: string }) => void) => () => void;
-    onStreamComplete: (callback: (data: { sessionId: string; claudeSessionId: string | null }) => void) => () => void;
+    onStreamComplete: (
+      callback: (data: { sessionId: string; claudeSessionId: string | null }) => void,
+    ) => () => void;
     onStreamError: (callback: (data: { sessionId: string; error: string }) => void) => () => void;
     onSessionsChanged: (callback: () => void) => () => void;
   };
   dialog: {
     selectDirectory: () => Promise<{ success: boolean; path: string | null }>;
-    selectFile: (options?: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<{ success: boolean; path: string | null }>;
-    selectFiles: (options?: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<{ success: boolean; paths: string[] }>;
-    saveInlineFile: (options: { dataBase64: string; fileName?: string; mimeType?: string; cwd?: string }) => Promise<{ success: boolean; path: string | null; error?: string }>;
-    readFileAsDataUrl: (filePath: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
+    selectFile: (options?: {
+      title?: string;
+      filters?: { name: string; extensions: string[] }[];
+    }) => Promise<{ success: boolean; path: string | null }>;
+    selectFiles: (options?: {
+      title?: string;
+      filters?: { name: string; extensions: string[] }[];
+    }) => Promise<{ success: boolean; paths: string[] }>;
+    saveInlineFile: (options: {
+      dataBase64: string;
+      fileName?: string;
+      mimeType?: string;
+      cwd?: string;
+    }) => Promise<{ success: boolean; path: string | null; error?: string }>;
+    readFileAsDataUrl: (
+      filePath: string,
+    ) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
+    statFile: (
+      filePath: string,
+    ) => Promise<{ success: boolean; isFile?: boolean; size?: number; mtimeMs?: number; error?: string }>;
+    readTextFile: (
+      filePath: string,
+    ) => Promise<{
+      success: boolean;
+      content?: string;
+      size?: number;
+      readBytes?: number;
+      truncated?: boolean;
+      error?: string;
+    }>;
+    generateThumbnail: (
+      filePath: string,
+    ) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
+    showMessageBox: (options: {
+      message: string;
+      type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+      title?: string;
+    }) => Promise<{ response: number }>;
   };
   shell: {
     openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     showItemInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
+    openHtmlInBrowser: (htmlContent: string) => Promise<{ success: boolean; error?: string }>;
+    getAppsForFile: (
+      filePath: string,
+    ) => Promise<{
+      success: boolean;
+      apps: Array<{ name: string; path: string; isDefault: boolean; icon?: string }>;
+      error?: string;
+    }>;
+    openPathWithApp: (
+      filePath: string,
+      appPath: string,
+    ) => Promise<{ success: boolean; error?: string }>;
+  };
+  clipboard: {
+    writeImageFromFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+    writeImageFromDataUrl: (dataUrl: string) => Promise<{ success: boolean; error?: string }>;
+  };
+  htmlShare: {
+    createFromHtmlFile: (options: {
+      sessionId: string;
+      artifactId: string;
+      filePath: string;
+      title: string;
+      accessMode: HtmlShareAccessMode;
+    }) => Promise<HtmlShareResult>;
+    updateFromHtmlFile: (options: {
+      shareId: string;
+      sessionId: string;
+      artifactId: string;
+      filePath: string;
+      title: string;
+      accessMode: HtmlShareAccessMode;
+    }) => Promise<HtmlShareResult>;
+    getByHtmlFile: (options: {
+      filePath: string;
+    }) => Promise<{ success: boolean; share?: HtmlShareResult | null; error?: string; code?: number }>;
+    disable: (shareId: string) => Promise<{ success: boolean; error?: string }>;
+    get: (shareId: string) => Promise<{ success: boolean; share?: unknown; error?: string }>;
+  };
+  voice: {
+    triggerDictation: () => Promise<{ success: boolean; error?: string }>;
+  };
+  artifact: {
+    watchFile: (filePath: string) => Promise<void>;
+    unwatchFile: (filePath: string) => Promise<void>;
+    onFileChanged: (callback: (data: { filePath: string }) => void) => () => void;
+    createPreviewSession: (
+      filePath: string,
+    ) => Promise<{ success: boolean; sessionId?: string; url?: string; error?: string }>;
+    createOfficePreviewSession: (
+      filePath: string,
+    ) => Promise<{ success: boolean; sessionId?: string; url?: string; error?: string }>;
+    destroyPreviewSession: (sessionId: string) => Promise<{ success: boolean }>;
+    clearBrowserCookies: () => Promise<{ success: boolean; error?: string }>;
+    clearBrowserCache: () => Promise<{ success: boolean; error?: string }>;
+    listLocalWebServices: (options?: ListLocalWebServicesOptions) => Promise<LocalWebService[]>;
   };
   autoLaunch: {
     get: () => Promise<{ enabled: boolean }>;
@@ -424,12 +814,18 @@ interface IElectronAPI {
   appInfo: {
     getVersion: () => Promise<string>;
     getSystemLocale: () => Promise<string>;
+    relaunch: () => Promise<void>;
   };
   appUpdate: {
-    download: (url: string) => Promise<{ success: boolean; filePath?: string; error?: string }>;
-    cancelDownload: () => Promise<{ success: boolean }>;
-    install: (filePath: string) => Promise<{ success: boolean; error?: string }>;
-    onDownloadProgress: (callback: (data: AppUpdateDownloadProgress) => void) => () => void;
+    getState: () => Promise<AppUpdateRuntimeState>;
+    checkNow: (options?: {
+      manual?: boolean;
+      userId?: string | null;
+    }) => Promise<AppUpdateCheckResult>;
+    retryDownload: () => Promise<{ success: boolean; state: AppUpdateRuntimeState }>;
+    cancelDownload: () => Promise<{ success: boolean; state: AppUpdateRuntimeState }>;
+    installReady: () => Promise<{ success: boolean; state: AppUpdateRuntimeState; error?: string }>;
+    onStateChanged: (callback: (data: AppUpdateRuntimeState) => void) => () => void;
   };
   log: {
     getPath: () => Promise<string>;
@@ -441,62 +837,294 @@ interface IElectronAPI {
       missingEntries?: string[];
       error?: string;
     }>;
+    fromRenderer: (level: string, tag: string, message: string) => void;
+  };
+  plugins: {
+    list: () => Promise<{
+      success: boolean;
+      plugins?: Array<{
+        pluginId: string;
+        version?: string;
+        description?: string;
+        source: 'npm' | 'clawhub' | 'git' | 'local' | 'bundled' | 'openclaw';
+        enabled: boolean;
+        canUninstall: boolean;
+        hasConfig: boolean;
+      }>;
+      error?: string;
+    }>;
+    install: (params: {
+      source: 'npm' | 'clawhub' | 'git' | 'local';
+      spec: string;
+      registry?: string;
+      version?: string;
+    }) => Promise<{ ok: boolean; pluginId?: string; version?: string; error?: string }>;
+    uninstall: (pluginId: string) => Promise<{ ok: boolean; error?: string }>;
+    setEnabled: (pluginId: string, enabled: boolean) => Promise<{ ok: boolean; error?: string }>;
+    getConfigSchema: (pluginId: string) => Promise<{
+      success: boolean;
+      schema?: {
+        configSchema: Record<string, unknown>;
+        uiHints: Record<
+          string,
+          {
+            label?: string;
+            help?: string;
+            sensitive?: boolean;
+            advanced?: boolean;
+            placeholder?: string;
+            order?: number;
+          }
+        >;
+      } | null;
+      config?: Record<string, unknown> | null;
+      error?: string;
+    }>;
+    saveConfig: (
+      pluginId: string,
+      config: Record<string, unknown>,
+    ) => Promise<{ ok: boolean; error?: string }>;
+    detect: () => Promise<{ plugins: string[]; error?: string }>;
+    sync: () => Promise<{ synced: string[]; error?: string }>;
+    onInstallLog: (callback: (line: string) => void) => () => void;
   };
   im: {
     getConfig: () => Promise<{ success: boolean; config?: IMGatewayConfig; error?: string }>;
-    setConfig: (config: Partial<IMGatewayConfig>, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    syncConfig: () => Promise<{ success: boolean; error?: string }>;
+    setConfig: (
+      config: Partial<IMGatewayConfig>,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    syncConfig: () => Promise<{ success: boolean; skipped?: boolean; error?: string }>;
     startGateway: (platform: Platform) => Promise<{ success: boolean; error?: string }>;
     stopGateway: (platform: Platform) => Promise<{ success: boolean; error?: string }>;
     testGateway: (
       platform: Platform,
-      configOverride?: Partial<IMGatewayConfig>
+      configOverride?: Partial<IMGatewayConfig>,
     ) => Promise<{ success: boolean; result?: IMConnectivityTestResult; error?: string }>;
     getStatus: () => Promise<{ success: boolean; status?: IMGatewayStatus; error?: string }>;
     getLocalIp: () => Promise<string>;
-    getOpenClawConfigSchema: () => Promise<{ success: boolean; result?: { schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> }; error?: string }>;
-    weixinQrLoginStart: () => Promise<{ success: boolean; qrDataUrl?: string; message: string; sessionKey?: string }>;
-    weixinQrLoginWait: (accountId?: string) => Promise<{ success: boolean; connected: boolean; message: string; accountId?: string }>;
+    getOpenClawConfigSchema: () => Promise<{
+      success: boolean;
+      result?: {
+        schema: Record<string, unknown>;
+        uiHints: Record<string, Record<string, unknown>>;
+      };
+      error?: string;
+    }>;
+    weixinQrLoginStart: () => Promise<{
+      success: boolean;
+      qrDataUrl?: string;
+      message: string;
+      sessionKey?: string;
+    }>;
+    weixinQrLoginWait: (sessionKey?: string) => Promise<{
+      success: boolean;
+      connected: boolean;
+      message: string;
+      accountId?: string;
+      alreadyConnected?: boolean;
+    }>;
 
     // POPO QR login
-    popoQrLoginStart: () => Promise<{ success: boolean; qrUrl?: string; taskToken?: string; timeoutMs?: number; message?: string }>;
-    popoQrLoginPoll: (taskToken: string) => Promise<{ success: boolean; appKey?: string; appSecret?: string; aesKey?: string; message: string }>;
+    popoQrLoginStart: () => Promise<{
+      success: boolean;
+      qrUrl?: string;
+      taskToken?: string;
+      timeoutMs?: number;
+      message?: string;
+    }>;
+    popoQrLoginPoll: (taskToken: string) => Promise<{
+      success: boolean;
+      appKey?: string;
+      appSecret?: string;
+      aesKey?: string;
+      message: string;
+    }>;
+
+    // POPO Multi-Instance
+    addPopoInstance: (
+      name: string,
+    ) => Promise<{
+      success: boolean;
+      instance?: import('./im').PopoInstanceConfig;
+      error?: string;
+    }>;
+    deletePopoInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setPopoInstanceConfig: (
+      instanceId: string,
+      config: Record<string, unknown>,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
 
     listPairingRequests: (platform: string) => Promise<{
       success: boolean;
-      requests: Array<{ id: string; code: string; createdAt: string; lastSeenAt: string; meta?: Record<string, string> }>;
+      requests: Array<{
+        id: string;
+        code: string;
+        createdAt: string;
+        lastSeenAt: string;
+        meta?: Record<string, string>;
+      }>;
       allowFrom: string[];
       error?: string;
     }>;
-    approvePairingCode: (platform: string, code: string) => Promise<{ success: boolean; error?: string }>;
-    rejectPairingRequest: (platform: string, code: string) => Promise<{ success: boolean; error?: string }>;
-    addQQInstance: (name: string) => Promise<{ success: boolean; instance?: QQInstanceConfig; error?: string }>;
+    approvePairingCode: (
+      platform: string,
+      code: string,
+    ) => Promise<{ success: boolean; error?: string }>;
+    rejectPairingRequest: (
+      platform: string,
+      code: string,
+    ) => Promise<{ success: boolean; error?: string }>;
+    nimQrLoginStart: () => Promise<{
+      uuid: string;
+      qrValue: string;
+      expiresIn: number;
+      pollInterval: number;
+      credentialKind: 'split';
+      rawData: Record<string, unknown> | null;
+    }>;
+    nimQrLoginPoll: (uuid: string) => Promise<{
+      status: 'pending' | 'success' | 'failed';
+      credentials?: {
+        appKey: string;
+        account: string;
+        token: string;
+      };
+      errorCode?: string;
+      error?: string;
+    }>;
+    addNimInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: NimInstanceConfig; error?: string }>;
+    deleteNimInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setNimInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addQQInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: QQInstanceConfig; error?: string }>;
     deleteQQInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setQQInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    addFeishuInstance: (name: string) => Promise<{ success: boolean; instance?: FeishuInstanceConfig; error?: string }>;
+    setQQInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addFeishuInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: FeishuInstanceConfig; error?: string }>;
     deleteFeishuInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setFeishuInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    addDingTalkInstance: (name: string) => Promise<{ success: boolean; instance?: DingTalkInstanceConfig; error?: string }>;
+    setFeishuInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addDingTalkInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: DingTalkInstanceConfig; error?: string }>;
     deleteDingTalkInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setDingTalkInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    addWecomInstance: (name: string) => Promise<{ success: boolean; instance?: WecomInstanceConfig; error?: string }>;
+    setDingTalkInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addEmailInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: EmailInstanceConfig; error?: string }>;
+    deleteEmailInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setEmailInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addWecomInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: WecomInstanceConfig; error?: string }>;
     deleteWecomInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setWecomInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
+    setWecomInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addTelegramInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: TelegramInstanceConfig; error?: string }>;
+    deleteTelegramInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setTelegramInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addDiscordInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: DiscordInstanceConfig; error?: string }>;
+    deleteDiscordInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setDiscordInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean; restartGatewayIfRunning?: boolean; markRestartOnSave?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
     onStatusChange: (callback: (status: IMGatewayStatus) => void) => () => void;
     onMessageReceived: (callback: (message: IMMessage) => void) => () => void;
   };
   scheduledTasks: {
-    list: () => Promise<{ success: boolean; tasks?: import('../../scheduledTask/types').ScheduledTask[]; error?: string }>;
-    get: (id: string) => Promise<{ success: boolean; task?: import('../../scheduledTask/types').ScheduledTask; error?: string }>;
-    create: (input: import('../../scheduledTask/types').ScheduledTaskInput) => Promise<{ success: boolean; task?: import('../../scheduledTask/types').ScheduledTask; error?: string }>;
-    update: (id: string, input: Partial<import('../../scheduledTask/types').ScheduledTaskInput>) => Promise<{ success: boolean; task?: import('../../scheduledTask/types').ScheduledTask; error?: string }>;
+    list: () => Promise<{
+      success: boolean;
+      tasks?: import('../../scheduledTask/types').ScheduledTask[];
+      error?: string;
+    }>;
+    get: (id: string) => Promise<{
+      success: boolean;
+      task?: import('../../scheduledTask/types').ScheduledTask;
+      error?: string;
+    }>;
+    create: (input: import('../../scheduledTask/types').ScheduledTaskInput) => Promise<{
+      success: boolean;
+      task?: import('../../scheduledTask/types').ScheduledTask;
+      error?: string;
+    }>;
+    update: (
+      id: string,
+      input: Partial<import('../../scheduledTask/types').ScheduledTaskInput>,
+    ) => Promise<{
+      success: boolean;
+      task?: import('../../scheduledTask/types').ScheduledTask;
+      error?: string;
+    }>;
     delete: (id: string) => Promise<{ success: boolean; error?: string }>;
-    toggle: (id: string, enabled: boolean) => Promise<{ success: boolean; task?: import('../../scheduledTask/types').ScheduledTask; warning?: string; error?: string }>;
+    toggle: (
+      id: string,
+      enabled: boolean,
+    ) => Promise<{
+      success: boolean;
+      task?: import('../../scheduledTask/types').ScheduledTask;
+      warning?: string;
+      error?: string;
+    }>;
     runManually: (id: string) => Promise<{ success: boolean; error?: string }>;
     stop: (id: string) => Promise<{ success: boolean; error?: string }>;
-    listRuns: (taskId: string, limit?: number, offset?: number) => Promise<{ success: boolean; runs?: import('../../scheduledTask/types').ScheduledTaskRun[]; error?: string }>;
+    listRuns: (
+      taskId: string,
+      limit?: number,
+      offset?: number,
+      filter?: import('../../scheduledTask/types').RunFilter,
+    ) => Promise<{
+      success: boolean;
+      runs?: import('../../scheduledTask/types').ScheduledTaskRun[];
+      error?: string;
+    }>;
     countRuns: (taskId: string) => Promise<{ success: boolean; count?: number; error?: string }>;
-    listAllRuns: (limit?: number, offset?: number) => Promise<{ success: boolean; runs?: import('../../scheduledTask/types').ScheduledTaskRunWithName[]; error?: string }>;
+    listAllRuns: (
+      limit?: number,
+      offset?: number,
+      filter?: import('../../scheduledTask/types').RunFilter,
+    ) => Promise<{
+      success: boolean;
+      runs?: import('../../scheduledTask/types').ScheduledTaskRunWithName[];
+      error?: string;
+    }>;
     resolveSession: (sessionKey: string) => Promise<{
       success: boolean;
       session?: import('./cowork').CoworkSession | null;
@@ -507,46 +1135,110 @@ interface IElectronAPI {
       channels?: import('../../scheduledTask/types').ScheduledTaskChannelOption[];
       error?: string;
     }>;
-    listChannelConversations?: (channel: string, accountId?: string) => Promise<{
+    listChannelConversations?: (
+      channel: string,
+      accountId?: string,
+      filterAccountId?: string,
+    ) => Promise<{
       success: boolean;
       conversations?: import('../../scheduledTask/types').ScheduledTaskConversationOption[];
       error?: string;
     }>;
-    onStatusUpdate: (callback: (data: import('../../scheduledTask/types').ScheduledTaskStatusEvent) => void) => () => void;
-    onRunUpdate: (callback: (data: import('../../scheduledTask/types').ScheduledTaskRunEvent) => void) => () => void;
+    onStatusUpdate: (
+      callback: (data: import('../../scheduledTask/types').ScheduledTaskStatusEvent) => void,
+    ) => () => void;
+    onRunUpdate: (
+      callback: (data: import('../../scheduledTask/types').ScheduledTaskRunEvent) => void,
+    ) => () => void;
     onRefresh: (callback: () => void) => () => void;
   };
   permissions: {
-    checkCalendar: () => Promise<{ success: boolean; status?: string; error?: string; autoRequested?: boolean }>;
-    requestCalendar: () => Promise<{ success: boolean; granted?: boolean; status?: string; error?: string }>;
+    checkCalendar: () => Promise<{
+      success: boolean;
+      status?: string;
+      error?: string;
+      autoRequested?: boolean;
+    }>;
+    requestCalendar: () => Promise<{
+      success: boolean;
+      granted?: boolean;
+      status?: string;
+      error?: string;
+    }>;
   };
   auth: {
     login: (loginUrl?: string) => Promise<{ success: boolean; error?: string }>;
-    exchange: (code: string) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
+    exchange: (
+      code: string,
+    ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
     getUser: () => Promise<{ success: boolean; user?: any; quota?: any }>;
     getQuota: () => Promise<{ success: boolean; quota?: any }>;
     logout: () => Promise<{ success: boolean }>;
     refreshToken: () => Promise<{ success: boolean; accessToken?: string }>;
     getAccessToken: () => Promise<string | null>;
-    getModels: () => Promise<{ success: boolean; models?: Array<{ modelId: string; modelName: string; provider: string; apiFormat: string }> }>;
+    getModels: () => Promise<{
+      success: boolean;
+      models?: Array<{ modelId: string; modelName: string; provider: string; apiFormat: string }>;
+    }>;
     getProfileSummary: () => Promise<{ success: boolean; data?: ProfileSummaryData }>;
+    getPendingCallback: () => Promise<string | null>;
     onCallback: (callback: (data: { code: string }) => void) => () => void;
     onQuotaChanged: (callback: () => void) => () => void;
-  }
+  };
+  media: {
+    getModels: (type: 'image' | 'video') => Promise<{ success: boolean; models?: Array<{ modelId: string; displayName: string; provider: string; mediaType: string; generationTimeout: number; pricing: Record<string, unknown> }>; error?: string }>;
+    getTaskStatus: (taskId: number, type: 'image' | 'video') => Promise<{ success: boolean; task?: Record<string, unknown>; error?: string }>;
+  };
   enterprise: {
-    getConfig: () => Promise<{ ui?: Record<string, 'hide' | 'disable' | 'readonly'>; disableUpdate?: boolean; version: string; name: string } | null>;
+    getConfig: () => Promise<{
+      ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
+      disableUpdate?: boolean;
+      version: string;
+      name: string;
+    } | null>;
   };
   networkStatus: {
     send: (status: 'online' | 'offline') => void;
   };
   auth: {
     login: (loginUrl?: string) => Promise<{ success: boolean; error?: string }>;
-    exchange: (code: string) => Promise<{ success: boolean; user?: { userId: string; phone: string; nickname: string; avatarUrl: string }; quota?: { planName: string; subscriptionStatus: string; creditsLimit: number; creditsUsed: number; creditsRemaining: number }; error?: string }>;
-    getUser: () => Promise<{ success: boolean; user?: { userId: string; phone: string; nickname: string; avatarUrl: string }; quota?: { planName: string; subscriptionStatus: string; creditsLimit: number; creditsUsed: number; creditsRemaining: number } }>;
-    getQuota: () => Promise<{ success: boolean; quota?: { planName: string; subscriptionStatus: string; creditsLimit: number; creditsUsed: number; creditsRemaining: number } }>;
+    exchange: (code: string) => Promise<{
+      success: boolean;
+      user?: import('../store/slices/authSlice').UserProfile;
+      quota?: {
+        planName: string;
+        subscriptionStatus: string;
+        creditsLimit: number;
+        creditsUsed: number;
+        creditsRemaining: number;
+      };
+      error?: string;
+    }>;
+    getUser: () => Promise<{
+      success: boolean;
+      user?: import('../store/slices/authSlice').UserProfile;
+      quota?: {
+        planName: string;
+        subscriptionStatus: string;
+        creditsLimit: number;
+        creditsUsed: number;
+        creditsRemaining: number;
+      };
+    }>;
+    getQuota: () => Promise<{
+      success: boolean;
+      quota?: {
+        planName: string;
+        subscriptionStatus: string;
+        creditsLimit: number;
+        creditsUsed: number;
+        creditsRemaining: number;
+      };
+    }>;
     logout: () => Promise<{ success: boolean }>;
     refreshToken: () => Promise<{ success: boolean; accessToken?: string }>;
     getAccessToken: () => Promise<string | null>;
+    getPendingCallback: () => Promise<string | null>;
     onCallback: (callback: (data: { code: string }) => void) => () => void;
   };
   qwen: Record<string, never>;
@@ -565,7 +1257,33 @@ interface IElectronAPI {
         domain?: string;
         error?: string;
       }>;
-      verify: (appId: string, appSecret: string) => Promise<{
+      verify: (
+        appId: string,
+        appSecret: string,
+      ) => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
+    };
+  };
+  dingtalk: {
+    install: {
+      qrcode: () => Promise<{
+        url: string;
+        deviceCode: string;
+        interval: number;
+        expireIn: number;
+      }>;
+      poll: (deviceCode: string) => Promise<{
+        done: boolean;
+        clientId?: string;
+        clientSecret?: string;
+        error?: string;
+      }>;
+      verify: (
+        clientId: string,
+        clientSecret: string,
+      ) => Promise<{
         success: boolean;
         error?: string;
       }>;
@@ -579,7 +1297,11 @@ interface IElectronAPI {
       interval: number;
       expiresIn: number;
     }>;
-    pollForToken: (deviceCode: string, interval: number, expiresIn: number) => Promise<{
+    pollForToken: (
+      deviceCode: string,
+      interval: number,
+      expiresIn: number,
+    ) => Promise<{
       success: boolean;
       token?: string;
       githubUser?: string;
@@ -596,20 +1318,74 @@ interface IElectronAPI {
     }>;
     onTokenUpdated: (callback: (data: { token: string; baseUrl: string }) => void) => () => void;
   };
+  openaiCodexOAuth: {
+    start: () => Promise<
+      | { success: true; email: string | null; accountId: string | null; expiresAt: number }
+      | { success: false; error: string }
+    >;
+    cancel: () => Promise<void>;
+    logout: () => Promise<void>;
+    status: () => Promise<
+      | { loggedIn: true; email: string | null; accountId: string | null; expiresAt: number }
+      | { loggedIn: false }
+    >;
+  };
 }
 
 // IM Gateway types
+interface EmailInstanceConfig {
+  instanceId: string;
+  instanceName: string;
+  enabled: boolean;
+  transport: 'imap' | 'ws';
+  email: string;
+  password?: string;
+  apiKey?: string;
+  agentId: string;
+  imapHost?: string;
+  imapPort?: number;
+  smtpHost?: string;
+  smtpPort?: number;
+  allowFrom?: string[];
+  replyMode?: 'immediate' | 'accumulated' | 'complete';
+  replyTo?: 'sender' | 'all';
+  a2aEnabled?: boolean;
+  a2aAgentDomains?: string[];
+  a2aMaxPingPongTurns?: number;
+}
+
+interface EmailMultiInstanceConfig {
+  instances: EmailInstanceConfig[];
+}
+
+interface EmailInstanceStatus {
+  instanceId: string;
+  instanceName: string;
+  connected: boolean;
+  startedAt: number | null;
+  lastError: string | null;
+  email: string | null;
+  transport: 'imap' | 'ws' | null;
+  lastInboundAt: number | null;
+  lastOutboundAt: number | null;
+}
+
+interface EmailMultiInstanceStatus {
+  instances: EmailInstanceStatus[];
+}
+
 interface IMGatewayConfig {
   dingtalk: DingTalkMultiInstanceConfig;
   feishu: FeishuMultiInstanceConfig;
-  telegram: TelegramOpenClawConfig;
+  telegram: TelegramMultiInstanceConfig;
   qq: QQMultiInstanceConfig;
-  discord: DiscordOpenClawConfig;
-  nim: NimConfig;
+  discord: DiscordMultiInstanceConfig;
+  nim: NimMultiInstanceConfig;
   'netease-bee': NeteaseBeeChanConfig;
   wecom: WecomMultiInstanceConfig;
-  popo: PopoOpenClawConfig;
+  popo: PopoMultiInstanceConfig;
   weixin: WeixinOpenClawConfig;
+  email: EmailMultiInstanceConfig;
   settings: IMSettings;
 }
 
@@ -726,6 +1502,24 @@ interface TelegramOpenClawConfig {
   debug: boolean;
 }
 
+interface TelegramInstanceConfig extends TelegramOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface TelegramInstanceStatus extends TelegramGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface TelegramMultiInstanceConfig {
+  instances: TelegramInstanceConfig[];
+}
+
+interface TelegramMultiInstanceStatus {
+  instances: TelegramInstanceStatus[];
+}
+
 interface DiscordOpenClawGuildConfig {
   requireMention?: boolean;
   allowFrom?: string[];
@@ -766,17 +1560,36 @@ interface NimAdvancedConfig {
   mediaMaxMb?: number;
   textChunkLimit?: number;
   debug?: boolean;
+  legacyLogin?: boolean;
+  weblbsUrl?: string;
+  link_web?: string;
+  nos_uploader?: string;
+  nos_downloader_v2?: string;
+  nosSsl?: boolean;
+  nos_accelerate?: string;
+  nos_accelerate_host?: string;
 }
 
-interface NimConfig {
+interface NimOpenClawConfig {
   enabled: boolean;
+  nimToken?: string;
   appKey: string;
   account: string;
   token: string;
+  antispamEnabled?: boolean;
   p2p?: NimP2pConfig;
   team?: NimTeamConfig;
   qchat?: NimQChatConfig;
   advanced?: NimAdvancedConfig;
+}
+
+interface NimInstanceConfig extends NimOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface NimMultiInstanceConfig {
+  instances: NimInstanceConfig[];
 }
 
 interface NeteaseBeeChanConfig {
@@ -867,6 +1680,24 @@ interface PopoOpenClawConfig {
   debug: boolean;
 }
 
+interface PopoInstanceConfig extends PopoOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface PopoInstanceStatus extends PopoGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface PopoMultiInstanceConfig {
+  instances: PopoInstanceConfig[];
+}
+
+interface PopoMultiInstanceStatus {
+  instances: PopoInstanceStatus[];
+}
+
 interface WeixinOpenClawConfig {
   enabled: boolean;
   accountId: string;
@@ -886,13 +1717,23 @@ interface IMGatewayStatus {
   dingtalk: DingTalkMultiInstanceStatus;
   feishu: FeishuMultiInstanceStatus;
   qq: QQMultiInstanceStatus;
-  telegram: TelegramGatewayStatus;
-  discord: DiscordGatewayStatus;
-  nim: NimGatewayStatus;
+  telegram: TelegramMultiInstanceStatus;
+  discord: DiscordMultiInstanceStatus;
+  nim: NimMultiInstanceStatus;
   'netease-bee': NeteaseBeeChanGatewayStatus;
   wecom: WecomMultiInstanceStatus;
-  popo: PopoGatewayStatus;
+  popo: PopoMultiInstanceStatus;
   weixin: WeixinGatewayStatus;
+  email: EmailMultiInstanceStatus;
+}
+
+interface NimInstanceStatus extends NimGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface NimMultiInstanceStatus {
+  instances: NimInstanceStatus[];
 }
 
 type IMConnectivityVerdict = 'pass' | 'warn' | 'fail';
@@ -964,6 +1805,24 @@ interface DiscordGatewayStatus {
   lastOutboundAt: number | null;
 }
 
+interface DiscordInstanceConfig extends DiscordOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface DiscordInstanceStatus extends DiscordGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface DiscordMultiInstanceConfig {
+  instances: DiscordInstanceConfig[];
+}
+
+interface DiscordMultiInstanceStatus {
+  instances: DiscordInstanceStatus[];
+}
+
 interface NimGatewayStatus {
   connected: boolean;
   startedAt: number | null;
@@ -1009,6 +1868,7 @@ interface PopoGatewayStatus {
 
 interface WeixinGatewayStatus {
   connected: boolean;
+  accountId: string | null;
   startedAt: number | null;
   lastError: string | null;
   lastInboundAt: number | null;
@@ -1032,4 +1892,4 @@ declare global {
   }
 }
 
-export {}; 
+export {};

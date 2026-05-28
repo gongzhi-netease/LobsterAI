@@ -3,13 +3,14 @@
  * Configuration form for a single DingTalk bot instance in multi-instance mode
  */
 
-import React, { useState } from 'react';
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
-import { SignalIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import TrashIcon from '../icons/TrashIcon';
-import type { DingTalkInstanceConfig, DingTalkInstanceStatus, DingTalkOpenClawConfig, IMConnectivityTestResult } from '../../types/im';
-import { i18nService } from '../../services/i18n';
+import { ArrowPathIcon, CheckCircleIcon, SignalIcon, XCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { PlatformRegistry } from '@shared/platform';
+import { QRCodeSVG } from 'qrcode.react';
+import React, { useEffect,useRef, useState } from 'react';
+
+import { i18nService } from '../../services/i18n';
+import type { DingTalkInstanceConfig, DingTalkInstanceStatus, DingTalkOpenClawConfig, IMConnectivityTestResult } from '../../types/im';
 
 interface DingTalkInstanceSettingsProps {
   instance: DingTalkInstanceConfig;
@@ -17,12 +18,11 @@ interface DingTalkInstanceSettingsProps {
   onConfigChange: (update: Partial<DingTalkOpenClawConfig>) => void;
   onSave: (override?: Partial<DingTalkOpenClawConfig>) => Promise<void>;
   onRename: (newName: string) => void;
-  onDelete: () => void;
-  onToggleEnabled: () => void;
   onTestConnectivity: () => void;
   testingPlatform: string | null;
   connectivityResults: Record<string, IMConnectivityTestResult>;
   language: 'zh' | 'en';
+  headerLeading?: React.ReactNode;
 }
 
 // Reusable guide card component for platform setup instructions
@@ -131,23 +131,97 @@ const DingTalkInstanceSettings: React.FC<DingTalkInstanceSettingsProps> = ({
   onConfigChange,
   onSave,
   onRename,
-  onDelete,
-  onToggleEnabled,
   onTestConnectivity,
   testingPlatform,
   connectivityResults,
   language,
+  headerLeading,
 }) => {
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [allowedUserIdInput, setAllowedUserIdInput] = useState('');
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState(instance.instanceName);
 
+  // QR code scanning state
+  const [qrStatus, setQrStatus] = useState<'idle' | 'loading' | 'showing' | 'success' | 'error'>('idle');
+  const [qrUrl, setQrUrl] = useState('');
+  const [qrTimeLeft, setQrTimeLeft] = useState(0);
+  const [qrError, setQrError] = useState('');
+  const qrDeviceCodeRef = useRef('');
+  const qrPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const qrCountdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isMountedRef = useRef(true);
+  const hasCredentials = !!(instance.clientId && instance.clientSecret);
+  const shouldShowQrPanel = !hasCredentials || (qrStatus !== 'idle' && qrStatus !== 'success');
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (qrPollTimerRef.current) clearInterval(qrPollTimerRef.current);
+      if (qrCountdownTimerRef.current) clearInterval(qrCountdownTimerRef.current);
+    };
+  }, []);
+
+  const handleStartQr = async () => {
+    if (qrPollTimerRef.current) clearInterval(qrPollTimerRef.current);
+    if (qrCountdownTimerRef.current) clearInterval(qrCountdownTimerRef.current);
+    setQrStatus('loading');
+    setQrError('');
+    try {
+      const result = await window.electron.dingtalk.install.qrcode();
+      if (!isMountedRef.current) return;
+      setQrUrl(result.url);
+      qrDeviceCodeRef.current = result.deviceCode;
+      const expireIn = result.expireIn ?? 600;
+      setQrTimeLeft(expireIn);
+      setQrStatus('showing');
+
+      qrCountdownTimerRef.current = setInterval(() => {
+        setQrTimeLeft((prev) => {
+          if (prev <= 1) {
+            clearInterval(qrCountdownTimerRef.current!);
+            qrCountdownTimerRef.current = null;
+            if (qrPollTimerRef.current) { clearInterval(qrPollTimerRef.current); qrPollTimerRef.current = null; }
+            setQrStatus('error');
+            setQrError(i18nService.t('dingtalkBotCreateWizardQrcodeExpired'));
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      const intervalMs = Math.max(result.interval ?? 5, 3) * 1000;
+      qrPollTimerRef.current = setInterval(async () => {
+        try {
+          const pollResult = await window.electron.dingtalk.install.poll(qrDeviceCodeRef.current);
+          if (!isMountedRef.current) return;
+          if (pollResult.done && pollResult.clientId && pollResult.clientSecret) {
+            clearInterval(qrPollTimerRef.current!); qrPollTimerRef.current = null;
+            clearInterval(qrCountdownTimerRef.current!); qrCountdownTimerRef.current = null;
+            onConfigChange({ clientId: pollResult.clientId, clientSecret: pollResult.clientSecret, enabled: true });
+            await onSave({ clientId: pollResult.clientId, clientSecret: pollResult.clientSecret, enabled: true });
+            setQrStatus('success');
+          } else if (pollResult.error) {
+            clearInterval(qrPollTimerRef.current!); qrPollTimerRef.current = null;
+            clearInterval(qrCountdownTimerRef.current!); qrCountdownTimerRef.current = null;
+            setQrStatus('error');
+            setQrError(pollResult.error);
+          }
+        } catch { /* keep retrying */ }
+      }, intervalMs);
+    } catch (err: unknown) {
+      if (!isMountedRef.current) return;
+      setQrStatus('error');
+      setQrError((err instanceof Error ? err.message : undefined) || '获取二维码失败');
+    }
+  };
+
   // Sync nameValue when instance changes
   React.useEffect(() => {
     setNameValue(instance.instanceName);
     setEditingName(false);
-  }, [instance.instanceId]);
+  }, [instance.instanceId, instance.instanceName]);
 
   const handleNameBlur = () => {
     setEditingName(false);
@@ -161,16 +235,10 @@ const DingTalkInstanceSettings: React.FC<DingTalkInstanceSettingsProps> = ({
 
   return (
     <div className="space-y-3">
-      {/* Instance Header: Name, Status, Enable Toggle, Delete */}
+      {/* Instance Header: Name and Status */}
       <div className="flex items-center gap-3 pb-3 border-b border-border-subtle">
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-surface border border-border-subtle p-1">
-            <img
-              src={PlatformRegistry.logo('dingtalk')}
-              alt="DingTalk"
-              className="w-4 h-4 object-contain rounded"
-            />
-          </div>
+          {headerLeading}
           {editingName ? (
             <input
               type="text"
@@ -205,39 +273,69 @@ const DingTalkInstanceSettings: React.FC<DingTalkInstanceSettingsProps> = ({
             ? i18nService.t('connected')
             : i18nService.t('disconnected')}
         </div>
-
-        {/* Enable toggle */}
-        <button
-          type="button"
-          onClick={onToggleEnabled}
-          disabled={!instance.enabled && !(instance.clientId && instance.clientSecret)}
-          className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-            instance.enabled
-              ? (instanceStatus?.connected ? 'bg-green-500' : 'bg-yellow-500')
-              : 'bg-gray-400 dark:bg-gray-600'
-          } ${!instance.enabled && !(instance.clientId && instance.clientSecret) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-          title={instance.enabled
-            ? (language === 'zh' ? '禁用此实例' : 'Disable this instance')
-            : (!(instance.clientId && instance.clientSecret)
-              ? i18nService.t('imInstanceFillCredentials')
-              : (language === 'zh' ? '启用此实例' : 'Enable this instance'))}
-        >
-          <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-            instance.enabled ? 'translate-x-4' : 'translate-x-0'
-          }`} />
-        </button>
-
-        {/* Delete button */}
-        <button
-          type="button"
-          onClick={onDelete}
-          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-red-500 hover:bg-red-500/10 rounded-lg transition-colors flex-shrink-0"
-          title={language === 'zh' ? '删除此实例' : 'Delete this instance'}
-        >
-          <TrashIcon className="h-4 w-4" />
-          {language === 'zh' ? '删除' : 'Delete'}
-        </button>
       </div>
+
+      {/* Scan QR code section */}
+      {shouldShowQrPanel && (
+      <div className="rounded-lg border border-dashed border-border-subtle p-4 text-center space-y-3">
+        {(qrStatus === 'idle' || qrStatus === 'error') && (
+          <>
+            <button
+              type="button"
+              onClick={() => void handleStartQr()}
+              className="px-4 py-2.5 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {i18nService.t('dingtalkBotCreateWizardScanBtn')}
+            </button>
+            <p className="text-xs text-secondary">
+              {i18nService.t('dingtalkBotCreateWizardScanHint')}
+            </p>
+            {qrStatus === 'error' && qrError && (
+              <div className="flex items-center justify-center gap-1.5 text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
+                <XCircleIcon className="h-4 w-4 flex-shrink-0" />
+                {qrError}
+              </div>
+            )}
+          </>
+        )}
+        {qrStatus === 'loading' && (
+          <div className="flex flex-col items-center gap-2 py-2">
+            <ArrowPathIcon className="h-7 w-7 text-primary animate-spin" />
+            <span className="text-xs text-secondary">{i18nService.t('dingtalkBotCreateWizardGenerating')}</span>
+          </div>
+        )}
+        {qrStatus === 'showing' && qrUrl && (
+          <div className="flex flex-col items-center gap-2">
+            <div className="p-2 bg-white rounded-lg inline-block">
+              <QRCodeSVG value={qrUrl} size={160} />
+            </div>
+            <p className="text-xs text-secondary max-w-[240px]">
+              {i18nService.t('dingtalkBotCreateWizardQrcodeDesc')}
+            </p>
+            <p className="text-xs text-secondary">
+              {qrTimeLeft}s
+            </p>
+          </div>
+        )}
+        {qrStatus === 'success' && (
+          <div className="flex items-center justify-center gap-1.5 text-xs text-green-600 dark:text-green-400 bg-green-500/10 px-3 py-2 rounded-lg">
+            <CheckCircleIcon className="h-4 w-4 flex-shrink-0" />
+            {i18nService.t('dingtalkBotCreateWizardSuccessTitle')}
+          </div>
+        )}
+      </div>
+      )}
+
+      {/* Divider */}
+      {shouldShowQrPanel && (
+      <div className="relative flex items-center">
+        <div className="flex-1 border-t border-border-subtle" />
+        <span className="px-3 text-xs text-secondary whitespace-nowrap">
+          {i18nService.t('dingtalkBotCreateWizardOrManual')}
+        </span>
+        <div className="flex-1 border-t border-border-subtle" />
+      </div>
+      )}
 
       {/* Guide */}
       <PlatformGuide
@@ -253,7 +351,7 @@ const DingTalkInstanceSettings: React.FC<DingTalkInstanceSettingsProps> = ({
       {/* Client ID (AppKey) */}
       <div className="space-y-1.5">
         <label className="block text-xs font-medium text-secondary">
-          Client ID (AppKey)
+          Client ID (AppKey)<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
         </label>
         <div className="relative">
           <input
@@ -282,7 +380,7 @@ const DingTalkInstanceSettings: React.FC<DingTalkInstanceSettingsProps> = ({
       {/* Client Secret (AppSecret) */}
       <div className="space-y-1.5">
         <label className="block text-xs font-medium text-secondary">
-          Client Secret (AppSecret)
+          Client Secret (AppSecret)<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
         </label>
         <div className="relative">
           <input

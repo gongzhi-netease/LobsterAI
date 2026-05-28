@@ -1,7 +1,7 @@
+import { ProviderName, resolveCodingPlanBaseUrl } from '../../shared/providers';
 import { store } from '../store';
-import { configService } from './config';
 import { ChatMessagePayload, ChatUserMessageInput, ImageAttachment } from '../types/chat';
-import { resolveCodingPlanBaseUrl } from '../../shared/providers';
+import { configService } from './config';
 
 export interface ApiConfig {
   apiKey: string;
@@ -9,6 +9,11 @@ export interface ApiConfig {
   provider?: string;
   apiFormat?: 'anthropic' | 'openai' | 'gemini';
 }
+
+type ProviderRuntimeCredential = {
+  apiKey?: string;
+  baseUrl?: string;
+};
 
 export class ApiError extends Error {
   constructor(
@@ -28,9 +33,18 @@ class ApiService {
   private config: ApiConfig | null = null;
   private currentRequestId: string | null = null;
   private cleanupFunctions: (() => void)[] = [];
+  private providerRuntimeCredentials: Record<string, ProviderRuntimeCredential | undefined> = {};
 
   setConfig(config: ApiConfig) {
     this.config = config;
+  }
+
+  setProviderRuntimeCredential(provider: string, credential: ProviderRuntimeCredential | null) {
+    if (!credential) {
+      delete this.providerRuntimeCredentials[provider];
+      return;
+    }
+    this.providerRuntimeCredentials[provider] = credential;
   }
 
   cancelOngoingRequest() {
@@ -242,7 +256,9 @@ class ApiService {
   }
 
   private providerRequiresApiKey(provider: string): boolean {
-    return provider !== 'ollama' && provider !== 'github-copilot';
+    return provider !== ProviderName.Ollama
+      && provider !== ProviderName.LmStudio
+      && provider !== ProviderName.Copilot;
   }
 
   // 检测当前选择的模型属于哪个 provider
@@ -251,7 +267,7 @@ class ApiService {
     if (
       normalizedHint
       && (
-        ['openai', 'deepseek', 'moonshot', 'zhipu', 'minimax', 'youdaozhiyun', 'qwen', 'openrouter', 'gemini', 'anthropic', 'xiaomi', 'stepfun', 'volcengine', 'github-copilot', 'ollama'].includes(normalizedHint)
+        ['openai', 'deepseek', 'moonshot', 'zhipu', 'minimax', 'youdaozhiyun', 'qwen', 'openrouter', 'gemini', 'anthropic', 'xiaomi', 'stepfun', 'volcengine', 'github-copilot', 'ollama', 'lm-studio'].includes(normalizedHint)
         || normalizedHint.startsWith('custom_')
       )
     ) {
@@ -293,6 +309,7 @@ class ApiService {
       if (providerConfig.enabled && (providerConfig.apiKey || !this.providerRequiresApiKey(provider))) {
         let baseUrl = providerConfig.baseUrl;
         let apiFormat = this.normalizeApiFormat(providerConfig.apiFormat);
+        const runtimeCredential = this.providerRuntimeCredentials[provider];
 
         if (providerConfig.codingPlanEnabled && (apiFormat === 'anthropic' || apiFormat === 'openai')) {
           const resolved = resolveCodingPlanBaseUrl(provider, true, apiFormat, baseUrl);
@@ -301,8 +318,8 @@ class ApiService {
         }
         
         return {
-          apiKey: providerConfig.apiKey,
-          baseUrl,
+          apiKey: runtimeCredential?.apiKey ?? providerConfig.apiKey,
+          baseUrl: runtimeCredential?.baseUrl ?? baseUrl,
           provider: provider,
           apiFormat,
         };
@@ -310,6 +327,44 @@ class ApiService {
     }
 
     return null;
+  }
+
+  private async ensureGitHubCopilotRuntimeConfig(config: ApiConfig): Promise<ApiConfig> {
+    const runtimeCredential = this.providerRuntimeCredentials[ProviderName.Copilot];
+    if (runtimeCredential?.apiKey) {
+      return {
+        ...config,
+        apiKey: runtimeCredential.apiKey,
+        ...(runtimeCredential.baseUrl ? { baseUrl: runtimeCredential.baseUrl } : {}),
+      };
+    }
+
+    try {
+      const result = await window.electron.githubCopilot.refreshToken();
+      if (result.success && result.token) {
+        const credential: ProviderRuntimeCredential = {
+          apiKey: result.token,
+          ...(result.baseUrl ? { baseUrl: result.baseUrl } : {}),
+        };
+        this.setProviderRuntimeCredential(ProviderName.Copilot, credential);
+        return {
+          ...config,
+          apiKey: result.token,
+          ...(result.baseUrl ? { baseUrl: result.baseUrl } : {}),
+        };
+      }
+      if (result.error) {
+        console.warn('[api-chat] Copilot token refresh returned an error:', result.error);
+      }
+    } catch (error) {
+      console.warn('[api-chat] Copilot token refresh failed:', error);
+    }
+
+    if (config.apiKey) {
+      return config;
+    }
+
+    throw new ApiError('GitHub Copilot authentication is not available. Please sign in again.');
   }
 
   async chat(
@@ -321,7 +376,7 @@ class ApiService {
       throw new ApiError('API configuration not set. Please configure your API settings in the settings menu.');
     }
 
-    const selectedModel = store.getState().model.selectedModel;
+    const selectedModel = store.getState().model.defaultSelectedModel;
     const provider = this.detectProvider(
       selectedModel.id,
       selectedModel.providerKey ?? selectedModel.provider
@@ -336,6 +391,10 @@ class ApiService {
     const providerConfig = this.getProviderConfig(provider);
     if (providerConfig) {
       effectiveConfig = providerConfig;
+    }
+
+    if (provider === ProviderName.Copilot) {
+      effectiveConfig = await this.ensureGitHubCopilotRuntimeConfig(effectiveConfig);
     }
 
     if (this.providerRequiresApiKey(provider) && !effectiveConfig.apiKey) {
@@ -362,7 +421,7 @@ class ApiService {
     } catch (error) {
       // Auto-retry once for GitHub Copilot auth errors (401 / token expired)
       if (
-        provider === 'github-copilot'
+        provider === ProviderName.Copilot
         && error instanceof ApiError
         && (error.statusCode === 401 || error.statusCode === 403)
       ) {
@@ -370,7 +429,11 @@ class ApiService {
         try {
           const result = await window.electron.githubCopilot.refreshToken();
           if (result.success && result.token) {
-            // Update local config with the refreshed token
+            const credential: ProviderRuntimeCredential = {
+              apiKey: result.token,
+              ...(result.baseUrl ? { baseUrl: result.baseUrl } : {}),
+            };
+            this.setProviderRuntimeCredential(ProviderName.Copilot, credential);
             const refreshedConfig: ApiConfig = {
               ...effectiveConfig,
               apiKey: result.token,
@@ -556,7 +619,7 @@ class ApiService {
     message: ChatUserMessageInput,
     onProgress?: (content: string, reasoning?: string) => void,
     history: ChatMessagePayload[] = [],
-    modelId: string = 'gemini-3-pro-preview',
+    modelId: string = 'gemini-3.1-pro-preview',
     config: ApiConfig = this.config!,
     supportsImages: boolean = false
   ): Promise<{ content: string; reasoning?: string }> {
@@ -881,7 +944,7 @@ class ApiService {
             headers.Authorization = `Bearer ${config.apiKey}`;
           }
         }
-        if (provider === 'github-copilot') {
+        if (provider === ProviderName.Copilot) {
           headers['Copilot-Integration-Id'] = 'vscode-chat';
           headers['Editor-Version'] = 'vscode/1.96.2';
           headers['Editor-Plugin-Version'] = 'copilot-chat/0.26.7';
