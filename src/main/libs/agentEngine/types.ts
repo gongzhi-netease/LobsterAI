@@ -1,7 +1,21 @@
-import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import type { CoworkMessage } from '../../coworkStore';
+import type { OpenClawSessionPatch } from '../../../common/openclawSession';
+import type { CoworkMessage, CoworkSessionStatus } from '../../coworkStore';
 
-export type CoworkAgentEngine = 'openclaw' | 'yd_cowork';
+export type CoworkAgentEngine = 'openclaw';
+
+export type PermissionResult =
+  | {
+      behavior: 'allow';
+      updatedInput?: Record<string, unknown>;
+      updatedPermissions?: Record<string, unknown>[];
+      toolUseID?: string;
+    }
+  | {
+      behavior: 'deny';
+      message: string;
+      interrupt?: boolean;
+      toolUseID?: string;
+    };
 
 export const ENGINE_SWITCHED_CODE = 'ENGINE_SWITCHED';
 
@@ -13,18 +27,57 @@ export interface PermissionRequest {
 }
 
 export interface CoworkRuntimeEvents {
-  message: (sessionId: string, message: CoworkMessage) => void;
-  messageUpdate: (sessionId: string, messageId: string, content: string) => void;
+  message: (sessionId: string, message: CoworkMessage, beforeMessageId?: string) => void;
+  messageUpdate: (sessionId: string, messageId: string, content: string, metadata?: Record<string, unknown>) => void;
+  sessionStatus: (sessionId: string, status: CoworkSessionStatus) => void;
+  contextUsageUpdate: (sessionId: string, usage: CoworkContextUsage) => void;
+  contextMaintenance: (sessionId: string, active: boolean) => void;
   permissionRequest: (sessionId: string, request: PermissionRequest) => void;
   complete: (sessionId: string, claudeSessionId: string | null) => void;
   error: (sessionId: string, error: string) => void;
   sessionStopped: (sessionId: string) => void;
 }
 
+export type CoworkContextUsage = {
+  sessionId: string;
+  sessionKey?: string;
+  usedTokens?: number;
+  contextTokens?: number;
+  percent?: number;
+  compactionCount?: number;
+  status: 'unknown' | 'normal' | 'warning' | 'danger' | 'compacting';
+  latestCompactionCheckpointId?: string;
+  latestCompactionReason?: string;
+  latestCompactionCreatedAt?: number;
+  model?: string;
+  updatedAt: number;
+};
+
 export type CoworkImageAttachment = {
   name: string;
   mimeType: string;
   base64Data: string;
+};
+
+export type CoworkMediaAttachmentRef = {
+  token: string;
+  mediaType: 'image' | 'video' | 'audio';
+  index: number;
+  fileId: string;
+  fileName: string;
+  mimeType: string;
+  localPath?: string;
+  remoteUrl?: string;
+  dataUrl?: string;
+  role?: 'first_frame' | 'last_frame' | 'reference_image' | 'reference_video' | 'reference_audio';
+};
+
+export type CoworkMediaSelection = {
+  mode: 'auto' | 'image' | 'video' | 'none';
+  modelId?: string;
+  modelName?: string;
+  imageModelId?: string;
+  videoModelId?: string;
 };
 
 export type CoworkStartOptions = {
@@ -36,12 +89,16 @@ export type CoworkStartOptions = {
   confirmationMode?: 'modal' | 'text';
   imageAttachments?: CoworkImageAttachment[];
   agentId?: string;
+  mediaSelection?: CoworkMediaSelection;
+  mediaReferences?: CoworkMediaAttachmentRef[];
 };
 
 export type CoworkContinueOptions = {
   systemPrompt?: string;
   skillIds?: string[];
   imageAttachments?: CoworkImageAttachment[];
+  mediaSelection?: CoworkMediaSelection;
+  mediaReferences?: CoworkMediaAttachmentRef[];
 };
 
 export interface CoworkRuntime {
@@ -55,6 +112,9 @@ export interface CoworkRuntime {
   ): this;
   startSession(sessionId: string, prompt: string, options?: CoworkStartOptions): Promise<void>;
   continueSession(sessionId: string, prompt: string, options?: CoworkContinueOptions): Promise<void>;
+  patchSession?(sessionId: string, patch: OpenClawSessionPatch): Promise<void>;
+  getContextUsage?(sessionId: string): Promise<CoworkContextUsage | null>;
+  compactContext?(sessionId: string): Promise<{ compacted: boolean; reason?: string; usage?: CoworkContextUsage | null }>;
   stopSession(sessionId: string): void;
   stopAllSessions(): void;
   respondToPermission(requestId: string, result: PermissionResult): void;

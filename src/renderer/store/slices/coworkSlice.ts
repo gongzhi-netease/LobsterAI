@@ -1,12 +1,16 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-import type {
-  CoworkSession,
-  CoworkSessionSummary,
-  CoworkMessage,
-  CoworkConfig,
-  CoworkPermissionRequest,
-  CoworkSessionStatus,
+
+import {
+  type CoworkConfig,
+  type CoworkContextUsage,
+  type CoworkMessage,
+  type CoworkPermissionRequest,
+  type CoworkSession,
+  type CoworkSessionStatus,
+  CoworkSessionStatusValue,
+  type CoworkSessionSummary,
 } from '../../types/cowork';
+import type { MediaGenerationSelection, MediaModel } from '../../types/mediaGeneration';
 import { removeSessionFromState, removeSessionsFromState } from './coworkDeleteState';
 
 export interface DraftAttachment {
@@ -18,6 +22,8 @@ export interface DraftAttachment {
 
 interface CoworkState {
   sessions: CoworkSessionSummary[];
+  /** Whether more sessions exist on the server beyond what is currently loaded. */
+  hasMoreSessions: boolean;
   currentSessionId: string | null;
   currentSession: CoworkSession | null;
   draftPrompts: Record<string, string>;
@@ -26,13 +32,23 @@ interface CoworkState {
   unreadSessionIds: string[];
   isCoworkActive: boolean;
   isStreaming: boolean;
+  contextUsageBySessionId: Record<string, CoworkContextUsage>;
+  compactingSessionIds: string[];
+  contextMaintenanceSessionIds: string[];
+  notifiedCompactionBySessionId: Record<string, number>;
   remoteManaged: boolean;
   pendingPermissions: CoworkPermissionRequest[];
   config: CoworkConfig;
+  /** Media generation models fetched from server */
+  mediaModels: { image: MediaModel[]; video: MediaModel[] };
+  /** Media generation mode selection per draft key */
+  mediaSelection: Record<string, MediaGenerationSelection>;
+  pendingMediaStatusUpdates: Record<string, Array<{ toolCallId: string; details: Record<string, unknown> }>>;
 }
 
 const initialState: CoworkState = {
   sessions: [],
+  hasMoreSessions: false,
   currentSessionId: null,
   currentSession: null,
   draftPrompts: {},
@@ -40,6 +56,10 @@ const initialState: CoworkState = {
   unreadSessionIds: [],
   isCoworkActive: false,
   isStreaming: false,
+  contextUsageBySessionId: {},
+  compactingSessionIds: [],
+  contextMaintenanceSessionIds: [],
+  notifiedCompactionBySessionId: {},
   remoteManaged: false,
   pendingPermissions: [],
   config: {
@@ -52,8 +72,25 @@ const initialState: CoworkState = {
     memoryLlmJudgeEnabled: false,
     memoryGuardLevel: 'strict',
     memoryUserMemoriesMaxItems: 12,
-    skipMissedJobs: false,
+    skipMissedJobs: true,
+    embeddingEnabled: false,
+    embeddingProvider: 'openai',
+    embeddingModel: '',
+    embeddingLocalModelPath: '',
+    embeddingVectorWeight: 0.7,
+    embeddingRemoteBaseUrl: '',
+    embeddingRemoteApiKey: '',
+    dreamingEnabled: false,
+    dreamingFrequency: '0 3 * * *',
+    dreamingModel: '',
+    dreamingTimezone: '',
+    openClawSessionPolicy: {
+      keepAlive: '30d',
+    },
   },
+  mediaModels: { image: [], video: [] },
+  mediaSelection: {},
+  pendingMediaStatusUpdates: {},
 };
 
 const markSessionRead = (state: CoworkState, sessionId: string | null) => {
@@ -67,44 +104,155 @@ const markSessionUnread = (state: CoworkState, sessionId: string) => {
   state.unreadSessionIds.push(sessionId);
 };
 
-const STREAMING_MERGE_PROBE_CHARS = 512;
+const MediaGenerationToolName = {
+  Image: 'lobsterai_image_generate',
+  Video: 'lobsterai_video_generate',
+} as const;
 
-const computeStreamingSuffixPrefixOverlap = (left: string, right: string): number => {
-  const leftProbe = left.slice(-STREAMING_MERGE_PROBE_CHARS);
-  const rightProbe = right.slice(0, STREAMING_MERGE_PROBE_CHARS);
-  const maxOverlap = Math.min(leftProbe.length, rightProbe.length);
-  for (let size = maxOverlap; size > 0; size -= 1) {
-    if (leftProbe.slice(-size) === rightProbe.slice(0, size)) {
-      return size;
+const MediaGenerationActionName = {
+  Status: 'status',
+} as const;
+
+const readMediaPollCount = (value: unknown): number | undefined => (
+  typeof value === 'number' && Number.isFinite(value) && value > 1
+    ? Math.floor(value)
+    : undefined
+);
+
+const mergeMediaDetails = (
+  existingDetails: Record<string, unknown> | undefined,
+  nextDetails: Record<string, unknown>,
+): Record<string, unknown> => {
+  const existingPollCount = readMediaPollCount(existingDetails?.pollCount);
+  const nextPollCount = readMediaPollCount(nextDetails.pollCount);
+  const pollCount = existingPollCount == null
+    ? nextPollCount
+    : nextPollCount == null
+      ? existingPollCount
+      : Math.max(existingPollCount, nextPollCount);
+  const merged = {
+    ...(existingDetails ?? {}),
+    ...nextDetails,
+  };
+  delete merged.pollCount;
+  if (pollCount != null) {
+    merged.pollCount = pollCount;
+  }
+  return merged;
+};
+
+const getMediaDetailTaskIds = (details: Record<string, unknown>): Set<string> => new Set(
+  [details.taskId, details.upstreamTaskId]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map(value => value.trim()),
+);
+
+const isSameRetainedMediaStatusUpdate = (
+  existing: { toolCallId: string; details: Record<string, unknown> },
+  toolCallId: string,
+  details: Record<string, unknown>,
+): boolean => {
+  if (existing.toolCallId === toolCallId) return true;
+
+  const existingTaskIds = getMediaDetailTaskIds(existing.details);
+  if (existingTaskIds.size === 0) return false;
+
+  for (const taskId of getMediaDetailTaskIds(details)) {
+    if (existingTaskIds.has(taskId)) return true;
+  }
+  return false;
+};
+
+const retainMediaStatusUpdate = (
+  state: CoworkState,
+  sessionId: string,
+  toolCallId: string,
+  details: Record<string, unknown>,
+): Record<string, unknown> => {
+  const pending = state.pendingMediaStatusUpdates[sessionId] ?? [];
+  const existingIndex = pending.findIndex(update => (
+    isSameRetainedMediaStatusUpdate(update, toolCallId, details)
+  ));
+
+  if (existingIndex >= 0) {
+    const mergedDetails = mergeMediaDetails(pending[existingIndex].details, details);
+    pending[existingIndex] = { toolCallId, details: mergedDetails };
+    state.pendingMediaStatusUpdates[sessionId] = pending;
+    return mergedDetails;
+  }
+
+  pending.push({ toolCallId, details: mergeMediaDetails(undefined, details) });
+  state.pendingMediaStatusUpdates[sessionId] = pending;
+  return pending[pending.length - 1].details;
+};
+
+const isMediaStatusToolUseMessage = (
+  message: CoworkMessage,
+  toolCallId: string,
+  details: Record<string, unknown>,
+): boolean => {
+  if (message.type !== 'tool_use') return false;
+  if (message.metadata?.toolUseId === toolCallId) return true;
+
+  const toolName = message.metadata?.toolName;
+  if (toolName !== MediaGenerationToolName.Image && toolName !== MediaGenerationToolName.Video) {
+    return false;
+  }
+
+  const input = message.metadata?.toolInput as Record<string, unknown> | undefined;
+  if (input?.action !== MediaGenerationActionName.Status || typeof input.taskId !== 'string') {
+    return false;
+  }
+
+  const inputTaskId = input.taskId.trim();
+  const detailTaskIds = new Set(
+    [details.taskId, details.upstreamTaskId]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map(value => value.trim()),
+  );
+  return detailTaskIds.has(inputTaskId);
+};
+
+const mergeMediaStatusDetailsIntoMessage = (
+  message: CoworkMessage,
+  details: Record<string, unknown>,
+): void => {
+  const existingDetails = message.metadata?.mediaStatusDetails as Record<string, unknown> | undefined;
+  message.metadata = {
+    ...message.metadata,
+    mediaStatusDetails: mergeMediaDetails(existingDetails, details),
+  };
+};
+
+const applyPendingMediaStatusUpdates = (
+  state: CoworkState,
+  sessionId: string,
+  message: CoworkMessage,
+): boolean => {
+  const pending = state.pendingMediaStatusUpdates[sessionId];
+  if (!pending || pending.length === 0) return false;
+
+  let applied = false;
+  for (const update of pending) {
+    if (!isMediaStatusToolUseMessage(message, update.toolCallId, update.details)) {
+      continue;
     }
+    mergeMediaStatusDetailsIntoMessage(message, update.details);
+    applied = true;
   }
-  return 0;
+  return applied;
 };
 
-const mergeStreamingMessageContent = (previousContent: string, incomingContent: string): string => {
-  if (!incomingContent) return previousContent;
-  if (!previousContent) return incomingContent;
-  if (incomingContent === previousContent) return previousContent;
-
-  // Snapshot mode: upstream sends full content each update.
-  if (incomingContent.startsWith(previousContent)) {
-    return incomingContent;
-  }
-
-  // Guard against temporary partial rollback chunks.
-  if (previousContent.startsWith(incomingContent)) {
-    return previousContent;
-  }
-
-  // Another snapshot pattern where previous content is fully contained.
-  if (incomingContent.includes(previousContent) && incomingContent.length > previousContent.length) {
-    return incomingContent;
-  }
-
-  // Delta mode: append the non-overlapping tail.
-  const overlap = computeStreamingSuffixPrefixOverlap(previousContent, incomingContent);
-  return previousContent + incomingContent.slice(overlap);
-};
+const toSessionSummary = (session: CoworkSession): CoworkSessionSummary => ({
+  id: session.id,
+  title: session.title,
+  status: session.status,
+  pinned: session.pinned ?? false,
+  pinOrder: session.pinOrder ?? null,
+  agentId: session.agentId,
+  createdAt: session.createdAt,
+  updatedAt: session.updatedAt,
+});
 
 const coworkSlice = createSlice({
   name: 'cowork',
@@ -122,26 +270,43 @@ const coworkSlice = createSlice({
       });
     },
 
+    setHasMoreSessions(state, action: PayloadAction<boolean>) {
+      state.hasMoreSessions = action.payload;
+    },
+
+    appendSessions(state, action: PayloadAction<{ sessions: CoworkSessionSummary[]; hasMore: boolean }>) {
+      const { sessions, hasMore } = action.payload;
+      const existingIds = new Set(state.sessions.map(s => s.id));
+      const newSessions = sessions.filter(s => !existingIds.has(s.id));
+      state.sessions = [...state.sessions, ...newSessions];
+      state.hasMoreSessions = hasMore;
+    },
+
     setCurrentSessionId(state, action: PayloadAction<string | null>) {
       state.currentSessionId = action.payload;
       markSessionRead(state, action.payload);
     },
 
     setCurrentSession(state, action: PayloadAction<CoworkSession | null>) {
-      state.currentSession = action.payload;
+      if (action.payload) {
+        const session = action.payload;
+        // Ensure pagination fields are always present (guard against stale IPC data).
+        state.currentSession = {
+          ...session,
+          messagesOffset: session.messagesOffset ?? 0,
+          totalMessages: session.totalMessages ?? session.messages.length,
+        };
+        for (const message of state.currentSession.messages) {
+          applyPendingMediaStatusUpdates(state, session.id, message);
+        }
+      } else {
+        state.currentSession = null;
+      }
       if (action.payload) {
         state.currentSessionId = action.payload.id;
         if (!action.payload.id.startsWith('temp-')) {
-          const { id, title, status, pinned, createdAt, updatedAt } = action.payload;
-          const summary: CoworkSessionSummary = {
-            id,
-            title,
-            status,
-            pinned: pinned ?? false,
-            createdAt,
-            updatedAt,
-          };
-          const sessionIndex = state.sessions.findIndex((session) => session.id === id);
+          const summary = toSessionSummary(action.payload);
+          const sessionIndex = state.sessions.findIndex((session) => session.id === summary.id);
           if (sessionIndex !== -1) {
             state.sessions[sessionIndex] = {
               ...state.sessions[sessionIndex],
@@ -165,16 +330,13 @@ const coworkSlice = createSlice({
     },
 
     addSession(state, action: PayloadAction<CoworkSession>) {
-      const summary: CoworkSessionSummary = {
-        id: action.payload.id,
-        title: action.payload.title,
-        status: action.payload.status,
-        pinned: action.payload.pinned ?? false,
-        createdAt: action.payload.createdAt,
-        updatedAt: action.payload.updatedAt,
-      };
+      const summary = toSessionSummary(action.payload);
       state.sessions.unshift(summary);
-      state.currentSession = action.payload;
+      state.currentSession = {
+        ...action.payload,
+        messagesOffset: action.payload.messagesOffset ?? 0,
+        totalMessages: action.payload.totalMessages ?? action.payload.messages.length,
+      };
       state.currentSessionId = action.payload.id;
       markSessionRead(state, action.payload.id);
     },
@@ -194,7 +356,11 @@ const coworkSlice = createSlice({
         state.currentSession.status = status;
         state.currentSession.updatedAt = Date.now();
         // Streaming state is tied to the currently opened session only
-        state.isStreaming = status === 'running';
+        state.isStreaming = status === CoworkSessionStatusValue.Running;
+      }
+
+      if (status === CoworkSessionStatusValue.Completed) {
+        markSessionUnread(state, sessionId);
       }
     },
 
@@ -206,14 +372,29 @@ const coworkSlice = createSlice({
       removeSessionsFromState(state, action.payload);
     },
 
-    addMessage(state, action: PayloadAction<{ sessionId: string; message: CoworkMessage }>) {
-      const { sessionId, message } = action.payload;
+    addMessage(state, action: PayloadAction<{ sessionId: string; message: CoworkMessage; beforeMessageId?: string }>) {
+      const { sessionId, message, beforeMessageId } = action.payload;
 
       if (state.currentSession?.id === sessionId) {
         const exists = state.currentSession.messages.some((item) => item.id === message.id);
         if (!exists) {
-          state.currentSession.messages.push(message);
+          // If beforeMessageId is specified, insert before that message to maintain correct order
+          // (e.g. thinking block should appear before the assistant text)
+          let inserted = false;
+          if (beforeMessageId) {
+            const targetIndex = state.currentSession.messages.findIndex((item) => item.id === beforeMessageId);
+            console.log('[ThinkingOrder] Redux addMessage: beforeMessageId=', beforeMessageId, 'targetIndex=', targetIndex, 'messageId=', message.id, 'totalMessages=', state.currentSession.messages.length);
+            if (targetIndex !== -1) {
+              state.currentSession.messages.splice(targetIndex, 0, message);
+              inserted = true;
+            }
+          }
+          if (!inserted) {
+            state.currentSession.messages.push(message);
+          }
+          applyPendingMediaStatusUpdates(state, sessionId, message);
           state.currentSession.updatedAt = message.timestamp;
+          state.currentSession.totalMessages += 1;
         }
       }
 
@@ -226,40 +407,116 @@ const coworkSlice = createSlice({
       markSessionUnread(state, sessionId);
     },
 
-    updateMessageContent(state, action: PayloadAction<{ sessionId: string; messageId: string; content: string }>) {
-      const { sessionId, messageId, content } = action.payload;
+    /** Prepend older messages when user scrolls up to load more history. */
+    prependMessages(state, action: PayloadAction<{ sessionId: string; messages: CoworkMessage[]; newOffset: number }>) {
+      const { sessionId, messages, newOffset } = action.payload;
+      if (state.currentSession?.id !== sessionId) return;
+      if (messages.length === 0) return;
+      const existingIds = new Set(state.currentSession.messages.map(m => m.id));
+      const toInsert = messages.filter(m => !existingIds.has(m.id));
+      state.currentSession.messages = [...toInsert, ...state.currentSession.messages];
+      state.currentSession.messagesOffset = newOffset;
+    },
+
+    updateMessageContent(state, action: PayloadAction<{ sessionId: string; messageId: string; content: string; metadata?: Record<string, unknown> }>) {
+      const { sessionId, messageId, content, metadata } = action.payload;
+      const updatedAt = Date.now();
 
       if (state.currentSession?.id === sessionId) {
         const messageIndex = state.currentSession.messages.findIndex(m => m.id === messageId);
         if (messageIndex !== -1) {
-          const previousContent = state.currentSession.messages[messageIndex].content || '';
-          if (state.config.agentEngine === 'yd_cowork') {
-            state.currentSession.messages[messageIndex].content = mergeStreamingMessageContent(previousContent, content);
-          } else {
-            state.currentSession.messages[messageIndex].content = content;
+          state.currentSession.messages[messageIndex].content = content;
+          if (metadata) {
+            const existingMetadata = state.currentSession.messages[messageIndex].metadata;
+            const existingToolResultDetails = existingMetadata?.toolResultDetails as Record<string, unknown> | undefined;
+            const nextToolResultDetails = metadata.toolResultDetails as Record<string, unknown> | undefined;
+            state.currentSession.messages[messageIndex].metadata = {
+              ...existingMetadata,
+              ...metadata,
+              ...(nextToolResultDetails
+                ? { toolResultDetails: mergeMediaDetails(existingToolResultDetails, nextToolResultDetails) }
+                : {}),
+            };
           }
+          state.currentSession.updatedAt = updatedAt;
         }
       }
 
+      const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
+      if (sessionIndex !== -1) {
+        state.sessions[sessionIndex].updatedAt = updatedAt;
+      }
+
       markSessionUnread(state, sessionId);
+    },
+
+    updateToolUseMediaStatus(state, action: PayloadAction<{ sessionId: string; toolCallId: string; details: Record<string, unknown> }>) {
+      const { sessionId, toolCallId, details } = action.payload;
+      const updatedAt = Date.now();
+      const retainedDetails = retainMediaStatusUpdate(state, sessionId, toolCallId, details);
+
+      if (state.currentSession?.id === sessionId) {
+        const message = state.currentSession.messages.find(item => (
+          isMediaStatusToolUseMessage(item, toolCallId, retainedDetails)
+        ));
+        if (message) {
+          mergeMediaStatusDetailsIntoMessage(message, retainedDetails);
+          state.currentSession.updatedAt = updatedAt;
+        }
+      }
+
+      const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
+      if (sessionIndex !== -1) {
+        state.sessions[sessionIndex].updatedAt = updatedAt;
+      }
     },
 
     setStreaming(state, action: PayloadAction<boolean>) {
       state.isStreaming = action.payload;
     },
 
+    setContextUsage(state, action: PayloadAction<CoworkContextUsage>) {
+      state.contextUsageBySessionId[action.payload.sessionId] = action.payload;
+    },
+
+    setContextCompacting(state, action: PayloadAction<{ sessionId: string; compacting: boolean }>) {
+      const { sessionId, compacting } = action.payload;
+      const existing = state.compactingSessionIds.includes(sessionId);
+      if (compacting && !existing) {
+        state.compactingSessionIds.push(sessionId);
+      } else if (!compacting && existing) {
+        state.compactingSessionIds = state.compactingSessionIds.filter(id => id !== sessionId);
+      }
+    },
+
+    setContextMaintenance(state, action: PayloadAction<{ sessionId: string; active: boolean }>) {
+      const { sessionId, active } = action.payload;
+      const existing = state.contextMaintenanceSessionIds.includes(sessionId);
+      if (active && !existing) {
+        state.contextMaintenanceSessionIds.push(sessionId);
+      } else if (!active && existing) {
+        state.contextMaintenanceSessionIds = state.contextMaintenanceSessionIds.filter(id => id !== sessionId);
+      }
+    },
+
+    markCompactionNotified(state, action: PayloadAction<{ sessionId: string; compactionCount: number }>) {
+      state.notifiedCompactionBySessionId[action.payload.sessionId] = action.payload.compactionCount;
+    },
+
     setRemoteManaged(state, action: PayloadAction<boolean>) {
       state.remoteManaged = action.payload;
     },
 
-    updateSessionPinned(state, action: PayloadAction<{ sessionId: string; pinned: boolean }>) {
-      const { sessionId, pinned } = action.payload;
+    updateSessionPinned(state, action: PayloadAction<{ sessionId: string; pinned: boolean; pinOrder?: number | null }>) {
+      const { sessionId, pinned, pinOrder } = action.payload;
       const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
       if (sessionIndex !== -1) {
         state.sessions[sessionIndex].pinned = pinned;
+        state.sessions[sessionIndex].pinOrder = pinned ? (pinOrder ?? state.sessions[sessionIndex].pinOrder ?? null) : null;
       }
       if (state.currentSession?.id === sessionId) {
         state.currentSession.pinned = pinned;
+        state.currentSession.pinOrder = pinned ? (pinOrder ?? state.currentSession.pinOrder ?? null) : null;
       }
     },
 
@@ -268,12 +525,16 @@ const coworkSlice = createSlice({
       const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
       if (sessionIndex !== -1) {
         state.sessions[sessionIndex].title = title;
-        state.sessions[sessionIndex].updatedAt = Date.now();
       }
       if (state.currentSession?.id === sessionId) {
         state.currentSession.title = title;
-        state.currentSession.updatedAt = Date.now();
       }
+    },
+
+    updateCurrentSessionModelOverride(state, action: PayloadAction<{ sessionId: string; modelOverride: string }>) {
+      const { sessionId, modelOverride } = action.payload;
+      if (state.currentSession?.id !== sessionId) return;
+      state.currentSession.modelOverride = modelOverride;
     },
 
     enqueuePendingPermission(state, action: PayloadAction<CoworkPermissionRequest>) {
@@ -333,12 +594,27 @@ const coworkSlice = createSlice({
     clearDraftAttachments(state, action: PayloadAction<string>) {
       delete state.draftAttachments[action.payload];
     },
+
+    setMediaModels(state, action: PayloadAction<{ image: MediaModel[]; video: MediaModel[] }>) {
+      state.mediaModels = action.payload;
+    },
+
+    setMediaSelection(state, action: PayloadAction<{ draftKey: string; selection: MediaGenerationSelection }>) {
+      const { draftKey, selection } = action.payload;
+      if (selection.mode === 'none') {
+        delete state.mediaSelection[draftKey];
+      } else {
+        state.mediaSelection[draftKey] = selection;
+      }
+    },
   },
 });
 
 export const {
   setCoworkActive,
   setSessions,
+  setHasMoreSessions,
+  appendSessions,
   setCurrentSessionId,
   setCurrentSession,
   setDraftPrompt,
@@ -350,17 +626,26 @@ export const {
   deleteSession,
   deleteSessions,
   addMessage,
+  prependMessages,
   updateMessageContent,
+  updateToolUseMediaStatus,
   setStreaming,
+  setContextUsage,
+  setContextCompacting,
+  setContextMaintenance,
+  markCompactionNotified,
   setRemoteManaged,
   updateSessionPinned,
   updateSessionTitle,
+  updateCurrentSessionModelOverride,
   enqueuePendingPermission,
   dequeuePendingPermission,
   clearPendingPermissions,
   setConfig,
   updateConfig,
   clearCurrentSession,
+  setMediaModels,
+  setMediaSelection,
 } = coworkSlice.actions;
 
 export default coworkSlice.reducer;

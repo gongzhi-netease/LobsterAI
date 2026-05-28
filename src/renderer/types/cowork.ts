@@ -1,3 +1,8 @@
+import type {
+  CoworkContextUsageFailureReason,
+  CoworkContextUsageSource,
+} from '../../shared/cowork/constants';
+
 // Cowork image attachment for vision-capable models
 export interface CoworkImageAttachment {
   name: string;
@@ -6,14 +11,36 @@ export interface CoworkImageAttachment {
 }
 
 // Cowork session status
-export type CoworkSessionStatus = 'idle' | 'running' | 'completed' | 'error';
+export const CoworkSessionStatusValue = {
+  Idle: 'idle',
+  Running: 'running',
+  Completed: 'completed',
+  Error: 'error',
+} as const;
+
+export type CoworkSessionStatus =
+  typeof CoworkSessionStatusValue[keyof typeof CoworkSessionStatusValue];
 
 // Cowork message types
 export type CoworkMessageType = 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'system';
 
 // Cowork execution mode
 export type CoworkExecutionMode = 'auto' | 'local' | 'sandbox';
-export type CoworkAgentEngine = 'openclaw' | 'yd_cowork';
+export type CoworkAgentEngine = 'openclaw';
+
+export const OpenClawSessionKeepAlive = {
+  OneDay: '1d',
+  SevenDays: '7d',
+  ThirtyDays: '30d',
+  OneYear: '365d',
+} as const;
+
+export type OpenClawSessionKeepAlive =
+  typeof OpenClawSessionKeepAlive[keyof typeof OpenClawSessionKeepAlive];
+
+export interface OpenClawSessionPolicyConfig {
+  keepAlive: OpenClawSessionKeepAlive;
+}
 
 // Cowork message metadata
 export interface CoworkMessageMetadata {
@@ -26,9 +53,45 @@ export interface CoworkMessageMetadata {
   isStreaming?: boolean;
   isFinal?: boolean;
   isThinking?: boolean;
-  skillIds?: string[];  // Skills used for this message
+  skillIds?: string[];
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  contextPercent?: number;
+  model?: string;
+  agentName?: string;
   [key: string]: unknown;
 }
+
+export interface CoworkContextUsage {
+  sessionId: string;
+  sessionKey?: string;
+  usedTokens?: number;
+  contextTokens?: number;
+  percent?: number;
+  compactionCount?: number;
+  status: 'unknown' | 'normal' | 'warning' | 'danger' | 'compacting';
+  latestCompactionCheckpointId?: string;
+  latestCompactionReason?: string;
+  latestCompactionCreatedAt?: number;
+  model?: string;
+  updatedAt: number;
+}
+
+export type CoworkContextUsageResult =
+  | {
+      success: true;
+      usage?: CoworkContextUsage | null;
+      source?: CoworkContextUsageSource;
+    }
+  | {
+      success: false;
+      error?: string;
+      reason?: CoworkContextUsageFailureReason;
+    };
 
 // Cowork message
 export interface CoworkMessage {
@@ -46,12 +109,18 @@ export interface CoworkSession {
   claudeSessionId: string | null;
   status: CoworkSessionStatus;
   pinned: boolean;
+  pinOrder?: number | null;
   cwd: string;
   systemPrompt: string;
+  modelOverride: string;
   executionMode: CoworkExecutionMode;
   activeSkillIds: string[];
   agentId: string;
   messages: CoworkMessage[];
+  /** Offset of the first loaded message in the full message history. 0 means loaded from the beginning. */
+  messagesOffset: number;
+  /** Total number of messages stored for this session. */
+  totalMessages: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -68,6 +137,18 @@ export interface CoworkConfig {
   memoryGuardLevel: 'strict' | 'standard' | 'relaxed';
   memoryUserMemoriesMaxItems: number;
   skipMissedJobs: boolean;
+  embeddingEnabled: boolean;
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingLocalModelPath: string;
+  embeddingVectorWeight: number;
+  embeddingRemoteBaseUrl: string;
+  embeddingRemoteApiKey: string;
+  dreamingEnabled: boolean;
+  dreamingFrequency: string;
+  dreamingModel: string;
+  dreamingTimezone: string;
+  openClawSessionPolicy: OpenClawSessionPolicyConfig;
 }
 
 export type CoworkConfigUpdate = Partial<Pick<
@@ -81,6 +162,17 @@ export type CoworkConfigUpdate = Partial<Pick<
   | 'memoryGuardLevel'
   | 'memoryUserMemoriesMaxItems'
   | 'skipMissedJobs'
+  | 'embeddingEnabled'
+  | 'embeddingProvider'
+  | 'embeddingModel'
+  | 'embeddingLocalModelPath'
+  | 'embeddingVectorWeight'
+  | 'embeddingRemoteBaseUrl'
+  | 'embeddingRemoteApiKey'
+  | 'dreamingEnabled'
+  | 'dreamingFrequency'
+  | 'dreamingModel'
+  | 'dreamingTimezone'
 >>;
 
 export interface CoworkApiConfig {
@@ -155,9 +247,22 @@ export interface CoworkSessionSummary {
   title: string;
   status: CoworkSessionStatus;
   pinned: boolean;
+  pinOrder?: number | null;
   agentId?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+// Subagent session summary for sidebar display
+export interface SubagentSessionSummary {
+  id: string;
+  agentId: string | null;
+  task: string | null;
+  label: string | null;
+  sessionKey: string | null;
+  parentSessionId: string;
+  status: 'running' | 'done' | 'error';
+  createdAt: number;
 }
 
 // Start session options
@@ -168,7 +273,10 @@ export interface CoworkStartOptions {
   title?: string;
   activeSkillIds?: string[];
   agentId?: string;
+  modelOverride?: string;
   imageAttachments?: CoworkImageAttachment[];
+  mediaSelection?: { mode: string; modelId?: string; modelName?: string; imageModelId?: string; videoModelId?: string };
+  mediaReferences?: import('./mediaGeneration').MediaAttachmentRef[];
 }
 
 // Continue session options
@@ -178,6 +286,8 @@ export interface CoworkContinueOptions {
   systemPrompt?: string;
   activeSkillIds?: string[];
   imageAttachments?: CoworkImageAttachment[];
+  mediaSelection?: { mode: string; modelId?: string; modelName?: string; imageModelId?: string; videoModelId?: string };
+  mediaReferences?: import('./mediaGeneration').MediaAttachmentRef[];
 }
 
 // IPC result types
@@ -190,6 +300,18 @@ export interface CoworkSessionResult {
 export interface CoworkSessionListResult {
   success: boolean;
   sessions?: CoworkSessionSummary[];
+  /** Whether more sessions exist beyond the currently loaded set. */
+  hasMore?: boolean;
+  error?: string;
+}
+
+export interface CoworkMessageListResult {
+  success: boolean;
+  messages?: CoworkMessage[];
+  /** Offset of the first returned message. */
+  offset?: number;
+  /** Total message count for the session. */
+  total?: number;
   error?: string;
 }
 
@@ -197,6 +319,55 @@ export interface CoworkConfigResult {
   success: boolean;
   config?: CoworkConfig;
   error?: string;
+}
+
+// ── Dreaming content display types ──────────────────────────────────
+
+export interface DreamingPhaseInfo {
+  enabled: boolean;
+  cron: string;
+  nextRunAtMs?: number;
+}
+
+export interface DreamingEntry {
+  key: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  snippet: string;
+  recallCount: number;
+  dailyCount: number;
+  groundedCount: number;
+  totalSignalCount: number;
+  lightHits: number;
+  remHits: number;
+  phaseHitCount: number;
+  promotedAt?: string;
+  lastRecalledAt?: string;
+}
+
+export interface DreamingStatusData {
+  enabled: boolean;
+  timezone?: string;
+  shortTermCount: number;
+  groundedSignalCount: number;
+  totalSignalCount: number;
+  promotedToday: number;
+  promotedTotal: number;
+  shortTermEntries: DreamingEntry[];
+  promotedEntries: DreamingEntry[];
+  phases?: {
+    light: DreamingPhaseInfo;
+    deep: DreamingPhaseInfo;
+    rem: DreamingPhaseInfo;
+  };
+}
+
+export interface DreamDiaryData {
+  found: boolean;
+  path: string;
+  content?: string;
+  updatedAtMs?: number;
 }
 
 // Stream event types for IPC communication

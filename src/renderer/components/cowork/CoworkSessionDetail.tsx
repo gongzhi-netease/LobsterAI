@@ -1,16 +1,12 @@
-import { ShareIcon } from '@heroicons/react/20/solid';
 import {
-  CheckIcon,
-  ChevronRightIcon,
   DocumentArrowDownIcon,
   PhotoIcon,
 } from '@heroicons/react/24/outline';
-import { FolderIcon } from '@heroicons/react/24/solid';
-import React, { useCallback, useEffect, useMemo,useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo,useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
-import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
+import { normalizeFilePathForDedup, normalizeLocalServiceUrlForDedup, parseFileLinksFromMessage, parseFilePathsFromText, parseLocalServiceUrlsFromText, parseMediaTokensFromText, parseRemoteImageArtifactsFromText, parseToolArtifact, parseToolResultMediaArtifacts, stripFileLinksFromText } from '../../services/artifactParser';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { RootState } from '../../store';
@@ -21,32 +17,51 @@ import {
   selectLastMessageContent,
   selectRemoteManaged,
 } from '../../store/selectors/coworkSelectors';
+import {
+  activateArtifactBrowserTab,
+  activateArtifactFileListTab,
+  activateArtifactPreviewTab,
+  addArtifact,
+  ArtifactSpecialTab,
+  closeArtifactPreviewTab,
+  closePanel,
+  MAX_PANEL_WIDTH,
+  MIN_PANEL_WIDTH,
+  selectActivePreviewTab,
+  selectIsPanelOpen,
+  selectPanelWidth,
+  selectPreviewTabs,
+  selectSessionArtifacts,
+  togglePanel,
+} from '../../store/slices/artifactSlice';
 import { setActiveSkillIds } from '../../store/slices/skillSlice';
+import type { Artifact } from '../../types/artifact';
+import { ArtifactTypeValue, PREVIEWABLE_ARTIFACT_TYPES } from '../../types/artifact';
 import type { CoworkImageAttachment,CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
-import type { Skill } from '../../types/skill';
-import { getCompactFolderName } from '../../utils/path';
-import Modal from '../common/Modal';
+import { CoworkSessionStatusValue } from '../../types/cowork';
+import type { MediaAttachmentRef } from '../../types/mediaGeneration';
+import { ArtifactPanel, type BrowserAnnotationPayload } from '../artifacts';
 import ComposeIcon from '../icons/ComposeIcon';
-import EllipsisHorizontalIcon from '../icons/EllipsisHorizontalIcon';
-import ExclamationTriangleIcon from '../icons/ExclamationTriangleIcon';
-import InformationCircleIcon from '../icons/InformationCircleIcon';
-import PencilSquareIcon from '../icons/PencilSquareIcon';
-import PuzzleIcon from '../icons/PuzzleIcon';
+import FileTypeIcon from '../icons/fileTypes/FileTypeIcon';
 import SidebarToggleIcon from '../icons/SidebarToggleIcon';
-import TrashIcon from '../icons/TrashIcon';
-import MarkdownContent from '../MarkdownContent';
 import WindowTitleBar from '../window/WindowTitleBar';
+import AssistantTurnBlock, { ContextCompactionDivider } from './AssistantTurnBlock';
+import { type CoworkOpenShareOptionsEventDetail,CoworkUiEvent } from './constants';
+import ContextUsageIndicator from './ContextUsageIndicator';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
-import DiffView, { extractDiffFromToolInput } from './DiffView';
 import LazyRenderTurn, { clearHeightCache } from './LazyRenderTurn';
-import ReadButton from './ReadButton';
-
+import {
+  buildConversationTurns,
+  buildDisplayItems,
+  COWORK_DETAIL_CONTENT_CLASS,
+  COWORK_DETAIL_GUTTER_CLASS,
+  hasRenderableAssistantContent,
+} from './messageDisplayUtils';
+import UserMessageItem from './UserMessageItem';
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;
-  onContinue: (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[]) => boolean | void | Promise<boolean | void>;
+  onContinue: (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[], mediaReferences?: MediaAttachmentRef[]) => boolean | void | Promise<boolean | void>;
   onStop: () => void;
-  onDeleteSession?: (sessionId: string) => Promise<void>;
-  onNavigateHome?: () => void;
   isSidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
   onNewChat?: () => void;
@@ -56,6 +71,10 @@ interface CoworkSessionDetailProps {
 const AUTO_SCROLL_THRESHOLD = 120;
 const NAV_SCROLL_LOCK_DURATION = 800;
 const NAV_BOTTOM_SNAP_THRESHOLD = 20;
+const ARTIFACT_PANEL_TRANSITION_MS = 200;
+const ARTIFACT_PANEL_RESIZE_HANDLE_WIDTH = 4;
+const COWORK_DETAIL_MIN_WIDTH = 480;
+const ARTIFACT_PANEL_MIN_WIDTH_RATIO = 1 / 6;
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001F]/g;
 
 const sanitizeExportFileName = (value: string): string => {
@@ -273,308 +292,121 @@ const composeExportCanvas = async (
   return final;
 };
 
-// PushPinIcon component for pin/unpin functionality
-const PushPinIcon: React.FC<React.SVGProps<SVGSVGElement> & { slashed?: boolean }> = ({
-  slashed,
-  ...props
-}) => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    {...props}
-  >
-    <g transform="rotate(45 12 12)">
-      <path d="M9 3h6l-1 5 2 2v2H8v-2l2-2-1-5z" />
-      <path d="M12 12v9" />
-    </g>
-    {slashed && <path d="M5 5L19 19" />}
+const ArtifactPanelIcon: React.FC<React.SVGProps<SVGSVGElement> & { open?: boolean }> = ({ open, ...props }) => {
+  const dividerX = open ? 10.5 : 12.5;
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <rect x="1.5" y="2" width="13" height="12" rx="2" />
+      <line x1={dividerX} y1="2" x2={dividerX} y2="14" />
+    </svg>
+  );
+};
+
+const ArtifactTabCloseIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" {...props}>
+    <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
   </svg>
 );
 
-const formatUnknown = (value: unknown): string => {
-  if (typeof value === 'string') {
-    return value;
-  }
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-};
-
-const getStringArray = (value: unknown): string | null => {
-  if (!Array.isArray(value)) return null;
-  const lines = value.filter((item) => typeof item === 'string') as string[];
-  return lines.length > 0 ? lines.join('\n') : null;
-};
-
-type TodoStatus = 'completed' | 'in_progress' | 'pending' | 'unknown';
-
-type ParsedTodoItem = {
-  primaryText: string;
-  secondaryText: string | null;
-  status: TodoStatus;
-};
-
-const normalizeToolName = (value: string): string => value.toLowerCase().replace(/[\s_]+/g, '');
-
-const TOOL_USE_ERROR_TAG_PATTERN = /^<tool_use_error>([\s\S]*?)<\/tool_use_error>$/i;
-const ANSI_ESCAPE_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
-
-const getToolDisplayName = (toolName: string | undefined): string => {
-  if (!toolName) return 'Tool';
-  const normalized = normalizeToolName(toolName);
-  switch (normalized) {
-    case 'cron':
-      return 'Cron';
-    case 'exec':
-    case 'bash':
-    case 'shell':
-      return 'Bash';
-    case 'read':
-    case 'readfile':
-      return 'Read';
-    case 'write':
-    case 'writefile':
-      return 'Write';
-    case 'edit':
-    case 'editfile':
-      return 'Edit';
-    case 'multiedit':
-      return 'MultiEdit';
-    case 'process':
-      return 'Process';
-    default:
-      return toolName;
-  }
-};
-
-const isBashLikeToolName = (toolName: string | undefined): boolean => {
-  if (!toolName) return false;
-  const normalized = normalizeToolName(toolName);
-  return normalized === 'bash' || normalized === 'exec' || normalized === 'shell';
-};
-
-const getToolInputString = (
-  input: Record<string, unknown>,
-  keys: string[],
-): string | null => {
-  for (const key of keys) {
-    const value = input[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value;
-    }
-  }
-  return null;
-};
-
-const truncatePreview = (value: string, maxLength = 120): string =>
-  value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
-
-const normalizeToolResultText = (value: string): string => {
-  const withoutAnsi = value.replace(ANSI_ESCAPE_PATTERN, '');
-  const errorTagMatch = withoutAnsi.trim().match(TOOL_USE_ERROR_TAG_PATTERN);
-  return errorTagMatch ? errorTagMatch[1].trim() : withoutAnsi;
-};
-
-const isTodoWriteToolName = (toolName: string | undefined): boolean => {
-  if (!toolName) return false;
-  return normalizeToolName(toolName) === 'todowrite';
-};
-
-const isCronToolName = (toolName: string | undefined): boolean => {
-  if (!toolName) return false;
-  return normalizeToolName(toolName) === 'cron';
-};
-
-const getCronToolSummary = (input: Record<string, unknown>): string | null => {
-  const action = getToolInputString(input, ['action']);
-  if (!action) return null;
-
-  const job = input.job && typeof input.job === 'object'
-    ? input.job as Record<string, unknown>
-    : null;
-  const jobName = job
-    ? getToolInputString(job, ['name', 'id'])
-    : null;
-  const jobId = getToolInputString(input, ['jobId', 'id'])
-    ?? (job ? getToolInputString(job, ['id']) : null);
-  const wakeText = getToolInputString(input, ['text']);
-
-  switch (action) {
-    case 'add':
-      return [action, jobName ?? jobId].filter(Boolean).join(' · ');
-    case 'update':
-    case 'remove':
-    case 'run':
-    case 'runs':
-      return [action, jobId ?? jobName].filter(Boolean).join(' · ');
-    case 'wake':
-      return [action, wakeText].filter(Boolean).join(' · ');
-    default:
-      return action;
-  }
-};
-
-const formatStructuredText = (value: string): string => {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(JSON.parse(trimmed), null, 2);
-  } catch {
-    return value;
-  }
-};
-
-const toTrimmedString = (value: unknown): string | null => (
-  typeof value === 'string' && value.trim() ? value.trim() : null
+const ArtifactTabPlusIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" {...props}>
+    <path d="M8 3.5v9M3.5 8h9" />
+  </svg>
 );
 
-const normalizeTodoStatus = (value: unknown): TodoStatus => {
-  const normalized = typeof value === 'string'
-    ? value.trim().toLowerCase().replace(/-/g, '_')
-    : '';
+const ArtifactBrowserTabIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <circle cx="8" cy="8" r="6" />
+    <ellipse cx="8" cy="8" rx="2.5" ry="6" />
+    <path d="M2 8h12" />
+  </svg>
+);
 
-  if (normalized === 'completed') return 'completed';
-  if (normalized === 'in_progress' || normalized === 'running') return 'in_progress';
-  if (normalized === 'pending' || normalized === 'todo') return 'pending';
-  return 'unknown';
-};
-
-const parseTodoWriteItems = (input: unknown): ParsedTodoItem[] | null => {
-  if (!input || typeof input !== 'object') return null;
-  const record = input as Record<string, unknown>;
-  if (!Array.isArray(record.todos)) return null;
-
-  const parsedItems = record.todos
-    .map((rawTodo) => {
-      if (!rawTodo || typeof rawTodo !== 'object') {
-        return null;
-      }
-
-      const todo = rawTodo as Record<string, unknown>;
-      const activeForm = toTrimmedString(todo.activeForm);
-      const content = toTrimmedString(todo.content);
-      const primaryText = activeForm ?? content ?? i18nService.t('coworkTodoUntitled');
-      const secondaryText = content && content !== primaryText ? content : null;
-
-      return {
-        primaryText,
-        secondaryText,
-        status: normalizeTodoStatus(todo.status),
-      } satisfies ParsedTodoItem;
-    })
-    .filter((item): item is ParsedTodoItem => item !== null);
-
-  return parsedItems.length > 0 ? parsedItems : null;
-};
-
-const getTodoWriteSummary = (items: ParsedTodoItem[]): string => {
-  const completedCount = items.filter((item) => item.status === 'completed').length;
-  const inProgressCount = items.filter((item) => item.status === 'in_progress').length;
-  const pendingCount = items.length - completedCount - inProgressCount;
-
-  const summary = [
-    `${items.length} ${i18nService.t('coworkTodoItems')}`,
-    `${completedCount} ${i18nService.t('coworkTodoCompleted')}`,
-    `${inProgressCount} ${i18nService.t('coworkTodoInProgress')}`,
-    `${pendingCount} ${i18nService.t('coworkTodoPending')}`,
-  ];
-
-  const activeItem = items.find((item) => item.status === 'in_progress');
-  if (activeItem) {
-    summary.push(activeItem.primaryText);
+class ArtifactPanelErrorBoundary extends React.Component<
+  { children: React.ReactNode; onClose: () => void },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode; onClose: () => void }) {
+    super(props);
+    this.state = { hasError: false, error: null };
   }
-
-  return summary.join(' · ');
-};
-
-const getToolInputSummary = (
-  toolName: string | undefined,
-  toolInput?: Record<string, unknown>
-): string | null => {
-  if (!toolName || !toolInput) return null;
-  const input = toolInput as Record<string, unknown>;
-  if (isTodoWriteToolName(toolName)) {
-    const items = parseTodoWriteItems(input);
-    return items ? getTodoWriteSummary(items) : null;
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
   }
-
-  const normalizedToolName = normalizeToolName(toolName);
-
-  switch (normalizedToolName) {
-    case 'cron':
-      return getCronToolSummary(input);
-    case 'bash':
-    case 'exec':
-    case 'shell':
-      return getToolInputString(input, ['command', 'cmd', 'script'])
-        ?? getStringArray(input.commands);
-    case 'read':
-    case 'readfile':
-    case 'write':
-    case 'writefile':
-    case 'edit':
-    case 'editfile':
-    case 'multiedit':
-      return getToolInputString(input, ['file_path', 'path', 'filePath', 'target_file', 'targetFile'])
-        ?? (
-          typeof input.content === 'string' && input.content.trim()
-            ? truncatePreview(input.content.split('\n')[0].trim())
-            : null
-        );
-    case 'glob':
-    case 'grep':
-      return getToolInputString(input, ['pattern', 'query']);
-    case 'task':
-      return getToolInputString(input, ['description', 'task']);
-    case 'webfetch':
-      return getToolInputString(input, ['url']);
-    case 'process': {
-      const action = getToolInputString(input, ['action']);
-      const sessionId = getToolInputString(input, ['sessionId', 'session_id']);
-      if (action && sessionId) return `${action} · ${sessionId}`;
-      return action ?? sessionId;
+  componentDidCatch(error: Error) {
+    console.error('[ArtifactPanel] render error:', error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <aside className="w-[420px] shrink-0 border-l border-border bg-background flex flex-col h-full items-center justify-center p-4">
+          <p className="text-sm text-red-500 mb-2">Artifact panel error</p>
+          <pre className="text-xs text-muted whitespace-pre-wrap max-w-full overflow-auto mb-3">
+            {this.state.error?.message}
+          </pre>
+          <button
+            onClick={() => { this.setState({ hasError: false, error: null }); this.props.onClose(); }}
+            className="px-3 py-1.5 text-xs rounded-lg bg-surface hover:bg-surface-hover text-foreground"
+          >
+            Close
+          </button>
+        </aside>
+      );
     }
-    default:
-      return null;
+    return this.props.children;
   }
+}
+
+// Streaming activity bar shown between messages and input
+const StreamingActivityBar: React.FC<{ messages: CoworkMessage[]; isContextMaintenance?: boolean }> = ({
+  messages,
+  isContextMaintenance = false,
+}) => {
+  // Walk messages backwards to find the latest tool_use without a paired tool_result
+  const getStatusText = (): string => {
+    if (isContextMaintenance) {
+      return i18nService.t('coworkContextMaintenanceRunning');
+    }
+    const toolUseIds = new Set<string>();
+    const toolResultIds = new Set<string>();
+    for (const msg of messages) {
+      const id = msg.metadata?.toolUseId;
+      if (typeof id === 'string') {
+        if (msg.type === 'tool_result') toolResultIds.add(id);
+        if (msg.type === 'tool_use') toolUseIds.add(id);
+      }
+    }
+    // Walk backwards to find latest unresolved tool_use
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.type === 'tool_use') {
+        const id = msg.metadata?.toolUseId;
+        if (typeof id === 'string' && !toolResultIds.has(id)) {
+          const toolName = typeof msg.metadata?.toolName === 'string' ? msg.metadata.toolName : null;
+          if (toolName) {
+            return `${i18nService.t('coworkToolRunning')} ${toolName}...`;
+          }
+        }
+      }
+    }
+    return `${i18nService.t('coworkToolRunning')}`;
+  };
+
+  return (
+    <div className={`shrink-0 animate-fade-in ${COWORK_DETAIL_GUTTER_CLASS}`}>
+      <div className={COWORK_DETAIL_CONTENT_CLASS}>
+        <div className="streaming-bar" />
+        <div className="py-1">
+          <span className="text-xs text-secondary">
+            {getStatusText()}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 };
 
-const formatToolInput = (
-  toolName: string | undefined,
-  toolInput?: Record<string, unknown>
-): string | null => {
-  if (!toolInput) return null;
-  const summary = getToolInputSummary(toolName, toolInput);
-  if (summary && summary.trim()) {
-    return summary;
-  }
-  return formatUnknown(toolInput);
-};
-
-const hasText = (value: unknown): value is string =>
-  typeof value === 'string' && value.trim().length > 0;
-
-const getToolResultDisplay = (message: CoworkMessage): string => {
-  if (hasText(message.content)) {
-    return formatStructuredText(normalizeToolResultText(message.content));
-  }
-  if (hasText(message.metadata?.toolResult)) {
-    return formatStructuredText(normalizeToolResultText(message.metadata?.toolResult ?? ''));
-  }
-  if (hasText(message.metadata?.error)) {
-    return formatStructuredText(normalizeToolResultText(message.metadata?.error ?? ''));
-  }
-  return '';
-};
+// ── Path resolution utilities (used by resolveLocalFilePath) ─────────────────
 
 const safeDecodeURIComponent = (value: string): string => {
   try {
@@ -654,925 +486,12 @@ const toAbsolutePathFromCwd = (filePath: string, cwd: string): string => {
   return `${cwd.replace(/\/$/, '')}/${filePath.replace(/^\.\//, '')}`;
 };
 
-export type ToolGroupItem = {
-  type: 'tool_group';
-  toolUse: CoworkMessage;
-  toolResult?: CoworkMessage | null;
-};
-
-export type DisplayItem =
-  | { type: 'message'; message: CoworkMessage }
-  | ToolGroupItem;
-
-export type AssistantTurnItem =
-  | { type: 'assistant'; message: CoworkMessage }
-  | { type: 'system'; message: CoworkMessage }
-  | { type: 'tool_group'; group: ToolGroupItem }
-  | { type: 'tool_result'; message: CoworkMessage };
-
-export type ConversationTurn = {
-  id: string;
-  userMessage: CoworkMessage | null;
-  assistantItems: AssistantTurnItem[];
-};
-
-export const buildDisplayItems = (messages: CoworkMessage[]): DisplayItem[] => {
-  const items: DisplayItem[] = [];
-  const groupsByToolUseId = new Map<string, ToolGroupItem>();
-  let pendingAdjacentGroup: ToolGroupItem | null = null;
-
-  for (const message of messages) {
-    if (message.type === 'tool_use') {
-      const group: ToolGroupItem = { type: 'tool_group', toolUse: message };
-      items.push(group);
-
-      const toolUseId = message.metadata?.toolUseId;
-      if (typeof toolUseId === 'string' && toolUseId.trim()) {
-        groupsByToolUseId.set(toolUseId, group);
-      }
-      pendingAdjacentGroup = group;
-      continue;
-    }
-
-    if (message.type === 'tool_result') {
-      let matched = false;
-      const toolUseId = message.metadata?.toolUseId;
-      if (typeof toolUseId === 'string' && groupsByToolUseId.has(toolUseId)) {
-        const group = groupsByToolUseId.get(toolUseId);
-        if (group) {
-          group.toolResult = message;
-          matched = true;
-        }
-      } else if (pendingAdjacentGroup && !pendingAdjacentGroup.toolResult) {
-        pendingAdjacentGroup.toolResult = message;
-        matched = true;
-      }
-
-      pendingAdjacentGroup = null;
-      if (!matched) {
-        items.push({ type: 'message', message });
-      }
-      continue;
-    }
-
-    pendingAdjacentGroup = null;
-    items.push({ type: 'message', message });
-  }
-
-  return items;
-};
-
-export const buildConversationTurns = (items: DisplayItem[]): ConversationTurn[] => {
-  const turns: ConversationTurn[] = [];
-  let currentTurn: ConversationTurn | null = null;
-  let orphanIndex = 0;
-
-  const ensureTurn = (): ConversationTurn => {
-    if (currentTurn) return currentTurn;
-    const orphanTurn: ConversationTurn = {
-      id: `orphan-${orphanIndex++}`,
-      userMessage: null,
-      assistantItems: [],
-    };
-    turns.push(orphanTurn);
-    currentTurn = orphanTurn;
-    return orphanTurn;
-  };
-
-  for (const item of items) {
-    if (item.type === 'message' && item.message.type === 'user') {
-      currentTurn = {
-        id: item.message.id,
-        userMessage: item.message,
-        assistantItems: [],
-      };
-      turns.push(currentTurn);
-      continue;
-    }
-
-    const turn = ensureTurn();
-    if (item.type === 'tool_group') {
-      turn.assistantItems.push({ type: 'tool_group', group: item });
-      continue;
-    }
-
-    const message = item.message;
-    if (message.type === 'assistant') {
-      turn.assistantItems.push({ type: 'assistant', message });
-      continue;
-    }
-
-    if (message.type === 'system') {
-      turn.assistantItems.push({ type: 'system', message });
-      continue;
-    }
-
-    if (message.type === 'tool_result') {
-      turn.assistantItems.push({ type: 'tool_result', message });
-      continue;
-    }
-
-    if (message.type === 'tool_use') {
-      turn.assistantItems.push({
-        type: 'tool_group',
-        group: {
-          type: 'tool_group',
-          toolUse: message,
-        },
-      });
-    }
-  }
-
-  return turns;
-};
-
-const isRenderableAssistantOrSystemMessage = (message: CoworkMessage): boolean => {
-  if (hasText(message.content) || hasText(message.metadata?.error)) {
-    return true;
-  }
-  if (message.metadata?.isThinking) {
-    return Boolean(message.metadata?.isStreaming);
-  }
-  return false;
-};
-
-const isVisibleAssistantTurnItem = (item: AssistantTurnItem): boolean => {
-  if (item.type === 'assistant' || item.type === 'system') {
-    return isRenderableAssistantOrSystemMessage(item.message);
-  }
-  if (item.type === 'tool_result') {
-    return hasText(getToolResultDisplay(item.message));
-  }
-  return true;
-};
-
-const getVisibleAssistantItems = (assistantItems: AssistantTurnItem[]): AssistantTurnItem[] =>
-  assistantItems.filter(isVisibleAssistantTurnItem);
-
-export const hasRenderableAssistantContent = (turn: ConversationTurn): boolean => (
-  getVisibleAssistantItems(turn.assistantItems).length > 0
-);
-
-const getToolResultLineCount = (result: string): number => {
-  if (!result) return 0;
-  return result.split('\n').length;
-};
-
-const TodoWriteInputView: React.FC<{ items: ParsedTodoItem[] }> = ({ items }) => {
-  const getStatusCheckboxClass = (status: TodoStatus): string => {
-    switch (status) {
-      case 'completed':
-        return 'bg-green-500/10 border-green-500 text-green-500';
-      case 'in_progress':
-        return 'bg-transparent border-blue-500';
-      case 'pending':
-      case 'unknown':
-      default:
-        return 'bg-transparent border-border';
-    }
-  };
-
-  return (
-    <div className="space-y-2">
-      {items.map((item, index) => (
-        <div
-          key={`todo-item-${index}`}
-          className="flex items-start gap-2"
-        >
-          <span className={`mt-0.5 h-4 w-4 rounded-[4px] border flex-shrink-0 inline-flex items-center justify-center ${getStatusCheckboxClass(item.status)}`}>
-            {item.status === 'completed' && <CheckIcon className="h-3 w-3 stroke-[2.5]" />}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className={`text-xs whitespace-pre-wrap break-words leading-5 ${
-              item.status === 'completed'
-                ? 'text-muted'
-                : 'text-foreground'
-            }`}>
-              {item.primaryText}
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-};
-
-const ToolCallGroup: React.FC<{
-  group: ToolGroupItem;
-  isLastInSequence?: boolean;
-  mapDisplayText?: (value: string) => string;
-}> = ({
-  group,
-  isLastInSequence = true,
-  mapDisplayText,
-}) => {
-  const { toolUse, toolResult } = group;
-  const rawToolName = typeof toolUse.metadata?.toolName === 'string' ? toolUse.metadata.toolName : 'Tool';
-  const toolName = getToolDisplayName(rawToolName);
-  const toolInput = toolUse.metadata?.toolInput;
-  const isCronTool = isCronToolName(rawToolName);
-  const isTodoWriteTool = isTodoWriteToolName(rawToolName);
-  const todoItems = isTodoWriteTool ? parseTodoWriteItems(toolInput) : null;
-  const mapText = mapDisplayText ?? ((value: string) => value);
-  const toolInputDisplayRaw = formatToolInput(rawToolName, toolInput);
-  const toolInputDisplay = toolInputDisplayRaw ? mapText(toolInputDisplayRaw) : null;
-  const toolInputSummaryRaw = getToolInputSummary(rawToolName, toolInput) ?? toolInputDisplayRaw;
-  const toolInputSummary = toolInputSummaryRaw ? mapText(toolInputSummaryRaw) : null;
-  const toolResultDisplayRaw = toolResult ? getToolResultDisplay(toolResult) : '';
-  const toolResultDisplay = mapText(toolResultDisplayRaw);
-  const hasToolResultText = hasText(toolResultDisplay);
-  const isToolError = Boolean(toolResult?.metadata?.isError || toolResult?.metadata?.error);
-  const showNoDetailError = isToolError && !hasToolResultText;
-  const toolResultFallback = showNoDetailError ? i18nService.t('coworkToolNoErrorDetail') : '';
-  const displayToolResult = hasToolResultText ? toolResultDisplay : toolResultFallback;
-  const [isExpanded, setIsExpanded] = useState(false);
-  const resultLineCount = hasToolResultText ? getToolResultLineCount(toolResultDisplay) : 0;
-  const toolResultSummary = isCronTool && hasToolResultText
-    ? truncatePreview(toolResultDisplay.replace(/\s+/g, ' '))
-    : null;
-
-  // Check if this is a Bash-like tool that should show terminal style
-  const isBashTool = isBashLikeToolName(rawToolName);
-
-  // Check if this is an Edit/MultiEdit tool with diff data
-  const diffDataList = useMemo(
-    () => extractDiffFromToolInput(rawToolName, toolInput as Record<string, unknown> | undefined),
-    [rawToolName, toolInput],
-  );
-  const isEditWithDiff = diffDataList !== null && diffDataList.length > 0;
-
-  return (
-    <div className="relative py-1">
-      {/* Vertical connecting line to next tool group */}
-      {!isLastInSequence && (
-        <div className="absolute left-[3.5px] top-[14px] bottom-[-8px] w-px bg-border" />
-      )}
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-start gap-2 text-left group relative z-10"
-      >
-        <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${
-          !toolResult
-            ? 'bg-blue-500 animate-pulse'
-            : isToolError
-              ? 'bg-red-500'
-              : 'bg-green-500'
-        }`} />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium text-secondary">
-              {toolName}
-            </span>
-            {toolInputSummary && (
-              <code className="text-xs text-muted font-mono truncate max-w-[400px]">
-                {toolInputSummary}
-              </code>
-            )}
-          </div>
-          {toolResult && !isTodoWriteTool && (hasToolResultText || showNoDetailError) && (
-            <div className={`text-xs mt-0.5 ${
-              hasToolResultText
-                ? 'text-muted'
-                : showNoDetailError
-                  ? 'text-red-500/80'
-                  : 'text-muted'
-            }`}>
-              {hasToolResultText
-                ? (toolResultSummary ?? `${resultLineCount} ${resultLineCount === 1 ? 'line' : 'lines'} of output`)
-                : toolResultFallback}
-            </div>
-          )}
-          {!toolResult && (
-            <div className="text-xs text-muted mt-0.5">
-              {i18nService.t('coworkToolRunning')}
-            </div>
-          )}
-        </div>
-      </button>
-      {isExpanded && (
-        <div className="ml-4 mt-2">
-          {isBashTool ? (
-            // Terminal-style display for Bash commands
-            <div className="rounded-lg overflow-hidden border border-border">
-              {/* Terminal header */}
-              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-surfaceInset">
-                <div className="w-2.5 h-2.5 rounded-full bg-red-500" />
-                <div className="w-2.5 h-2.5 rounded-full bg-yellow-500" />
-                <div className="w-2.5 h-2.5 rounded-full bg-green-500" />
-                <span className="ml-2 text-[10px] text-secondary font-medium">Terminal</span>
-              </div>
-              {/* Terminal content */}
-              <div className="bg-surface-inset px-3 py-3 max-h-72 overflow-y-auto font-mono text-xs">
-                {toolInputDisplay && (
-                  <div className="text-foreground">
-                    <span className="text-primary select-none">$ </span>
-                    <span className="whitespace-pre-wrap break-words">{toolInputDisplay}</span>
-                  </div>
-                )}
-                {toolResult && (hasToolResultText || showNoDetailError) && (
-                  <div className={`mt-1.5 whitespace-pre-wrap break-words ${
-                    isToolError
-                      ? 'text-red-400'
-                      : hasToolResultText
-                        ? 'text-secondary'
-                        : 'text-muted italic'
-                  }`}>
-                    {displayToolResult}
-                  </div>
-                )}
-                {!toolResult && (
-                  <div className="text-muted mt-1.5 italic">
-                    {i18nService.t('coworkToolRunning')}
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : isTodoWriteTool && todoItems ? (
-            <TodoWriteInputView items={todoItems} />
-          ) : isEditWithDiff && diffDataList ? (
-            // Diff view for Edit/MultiEdit tools
-            <div className="space-y-2">
-              {diffDataList.map((diff, idx) => (
-                <DiffView
-                  key={idx}
-                  oldStr={diff.oldStr}
-                  newStr={diff.newStr}
-                  filePath={diff.filePath}
-                />
-              ))}
-              {toolResult && (hasToolResultText || showNoDetailError) && (
-                <div>
-                  <div className="text-[10px] font-medium dark:text-claude-darkTextSecondary/70 text-claude-textSecondary/70 uppercase tracking-wider mb-1">
-                    {i18nService.t('coworkToolResult')}
-                  </div>
-                  <div className="max-h-32 overflow-y-auto">
-                    <pre className={`text-xs whitespace-pre-wrap break-words font-mono ${
-                      isToolError
-                        ? 'text-red-500'
-                        : hasToolResultText
-                          ? 'dark:text-claude-darkText text-claude-text'
-                          : 'dark:text-claude-darkTextSecondary text-claude-textSecondary italic'
-                    }`}>
-                      {displayToolResult}
-                    </pre>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            // Standard display for other tools with input/output labels
-            <div className="space-y-2">
-              {toolInputDisplay && (
-                <div>
-                  <div className="text-[10px] font-medium text-muted uppercase tracking-wider mb-1">
-                    {i18nService.t('coworkToolInput')}
-                  </div>
-                  <div className="max-h-48 overflow-y-auto">
-                    <pre className="text-xs text-foreground whitespace-pre-wrap break-words font-mono">
-                      {toolInputDisplay}
-                    </pre>
-                  </div>
-                </div>
-              )}
-              {toolResult && (hasToolResultText || showNoDetailError) && (
-                <div>
-                  <div className="text-[10px] font-medium text-muted uppercase tracking-wider mb-1">
-                    {i18nService.t('coworkToolResult')}
-                  </div>
-                  <div className="max-h-64 overflow-y-auto">
-                    <pre className={`text-xs whitespace-pre-wrap break-words font-mono ${
-                      isToolError
-                        ? 'text-red-500'
-                        : hasToolResultText
-                          ? 'text-foreground'
-                          : 'text-secondary italic'
-                    }`}>
-                      {displayToolResult}
-                    </pre>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
-// Copy button component
-const CopyButton: React.FC<{
-  content: string;
-  visible: boolean;
-}> = ({ content, visible }) => {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  };
-
-  return (
-    <button
-      onClick={handleCopy}
-      className={`p-1.5 rounded-md hover:bg-surface-raised transition-all duration-200 ${
-        visible ? 'opacity-100' : 'opacity-0 pointer-events-none'
-      }`}
-      title={i18nService.t('copyToClipboard')}
-    >
-      {copied ? (
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="24"
-          height="24"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="w-4 h-4 text-green-500"
-          aria-hidden="true"
-        >
-          <polyline points="20 6 9 17 4 12"></polyline>
-        </svg>
-      ) : (
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="24"
-          height="24"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="w-4 h-4 text-[var(--icon-secondary)]"
-          aria-hidden="true"
-        >
-          <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
-          <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
-        </svg>
-      )}
-    </button>
-  );
-};
-
-// Re-edit button component — lets the user re-fill a sent message back into the input
-const ReEditButton: React.FC<{
-  visible: boolean;
-  onClick: () => void;
-}> = ({ visible, onClick }) => {
-  return (
-    <button
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      className={`p-1.5 rounded-md dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-all duration-200 ${
-        visible ? 'opacity-100' : 'opacity-0 pointer-events-none'
-      }`}
-      title={i18nService.t('coworkReEdit')}
-    >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="24"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className="w-4 h-4 text-[var(--icon-secondary)]"
-        aria-hidden="true"
-      >
-        <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-        <path d="m15 5 4 4" />
-      </svg>
-    </button>
-  );
-};
-
-export const UserMessageItem: React.FC<{
-  message: CoworkMessage;
-  skills: Skill[];
-  onReEdit?: (message: CoworkMessage) => void;
-}> = React.memo(({ message, skills, onReEdit }) => {
-  const [isHovered, setIsHovered] = useState(false);
-  const [expandedImage, setExpandedImage] = useState<string | null>(null);
-
-  // Get skills used for this message
-  const messageSkillIds = (message.metadata as CoworkMessageMetadata)?.skillIds || [];
-  const messageSkills = messageSkillIds
-    .map(id => skills.find(s => s.id === id))
-    .filter((s): s is NonNullable<typeof s> => s !== undefined);
-
-  // Get image attachments from metadata
-  const imageAttachments = ((message.metadata as CoworkMessageMetadata)?.imageAttachments ?? []) as CoworkImageAttachment[];
-
-  return (
-    <div
-      className="py-2 px-4"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-      <div className="max-w-3xl mx-auto">
-        <div className="pl-4 sm:pl-8 md:pl-12">
-          <div className="flex items-start gap-3 flex-row-reverse">
-            <div className="w-full min-w-0 flex flex-col items-end">
-              <div className="w-fit max-w-[42rem] rounded-2xl px-4 py-2.5 bg-surface text-foreground shadow-subtle">
-                {message.content?.trim() && (
-                  <MarkdownContent
-                    content={message.content}
-                    className="max-w-none whitespace-pre-wrap break-words"
-                  />
-                )}
-                {imageAttachments.length > 0 && (
-                  <div className={`flex flex-wrap gap-2 ${message.content?.trim() ? 'mt-2' : ''}`}>
-                    {imageAttachments.map((img, idx) => (
-                      <div key={idx} className="relative group">
-                        <img
-                          src={`data:${img.mimeType};base64,${img.base64Data}`}
-                          alt={img.name}
-                          className="max-h-48 max-w-[16rem] rounded-lg object-contain cursor-pointer border border-border hover:border-primary transition-colors"
-                          title={img.name}
-                          onClick={() => setExpandedImage(`data:${img.mimeType};base64,${img.base64Data}`)}
-                        />
-                        <div className="absolute bottom-1 left-1 right-1 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/50 text-white text-[10px] opacity-0 group-hover:opacity-100 transition-opacity truncate pointer-events-none">
-                          <PhotoIcon className="h-3 w-3 flex-shrink-0" />
-                          <span className="truncate">{img.name}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center justify-end gap-1.5 mt-1">
-                {onReEdit && (
-                  <ReEditButton
-                    visible={isHovered}
-                    onClick={() => onReEdit(message)}
-                  />
-                )}
-                <CopyButton
-                  content={message.content}
-                  visible={isHovered}
-                />
-                {messageSkills.length > 0 && (
-                  <div className="flex items-center gap-1.5 mr-1.5">
-                    {messageSkills.map(skill => (
-                      <div
-                        key={skill.id}
-                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-primary-muted"
-                        title={skill.description}
-                      >
-                        <PuzzleIcon className="h-2.5 w-2.5 text-primary" />
-                        <span className="text-[10px] font-medium text-primary max-w-[60px] truncate">
-                          {skill.name}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      {/* Image lightbox overlay */}
-      {expandedImage && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-pointer"
-          onClick={() => setExpandedImage(null)}
-        >
-          <img
-            src={expandedImage}
-            alt="Preview"
-            className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          />
-        </div>
-      )}
-    </div>
-  );
-});
-
-const AssistantMessageItem: React.FC<{
-  message: CoworkMessage;
-  resolveLocalFilePath?: (href: string, text: string) => string | null;
-  mapDisplayText?: (value: string) => string;
-  showCopyButton?: boolean;
-}> = ({
-  message,
-  resolveLocalFilePath,
-  mapDisplayText,
-  showCopyButton = false,
-}) => {
-  const [isHovered, setIsHovered] = useState(false);
-  const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
-
-  return (
-    <div
-      className="relative"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-      <div className="text-foreground">
-        <MarkdownContent
-          content={displayContent}
-          className="prose dark:prose-invert max-w-none"
-          resolveLocalFilePath={resolveLocalFilePath}
-          showRevealInFolderAction
-        />
-      </div>
-      {showCopyButton && (
-        <div className="flex items-center gap-1.5 mt-1">
-          <CopyButton
-            content={displayContent}
-            visible={isHovered}
-          />
-          <ReadButton
-            content={displayContent}
-            visible={isHovered}
-          />
-        </div>
-      )}
-    </div>
-  );
-};
-
-// Streaming activity bar shown between messages and input
-const StreamingActivityBar: React.FC<{ messages: CoworkMessage[] }> = ({ messages }) => {
-  // Walk messages backwards to find the latest tool_use without a paired tool_result
-  const getStatusText = (): string => {
-    const toolUseIds = new Set<string>();
-    const toolResultIds = new Set<string>();
-    for (const msg of messages) {
-      const id = msg.metadata?.toolUseId;
-      if (typeof id === 'string') {
-        if (msg.type === 'tool_result') toolResultIds.add(id);
-        if (msg.type === 'tool_use') toolUseIds.add(id);
-      }
-    }
-    // Walk backwards to find latest unresolved tool_use
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.type === 'tool_use') {
-        const id = msg.metadata?.toolUseId;
-        if (typeof id === 'string' && !toolResultIds.has(id)) {
-          const toolName = typeof msg.metadata?.toolName === 'string' ? msg.metadata.toolName : null;
-          if (toolName) {
-            return `${i18nService.t('coworkToolRunning')} ${toolName}...`;
-          }
-        }
-      }
-    }
-    return `${i18nService.t('coworkToolRunning')}`;
-  };
-
-  return (
-    <div className="shrink-0 animate-fade-in px-4">
-      <div className="max-w-3xl mx-auto">
-        <div className="streaming-bar" />
-        <div className="py-1">
-          <span className="text-xs text-secondary">
-            {getStatusText()}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const TypingDots: React.FC = () => (
-  <div className="flex items-center space-x-1.5 py-1">
-    <div className="w-2 h-2 rounded-full bg-primary animate-bounce" style={{ animationDelay: '0ms' }} />
-    <div className="w-2 h-2 rounded-full bg-primary animate-bounce" style={{ animationDelay: '150ms' }} />
-    <div className="w-2 h-2 rounded-full bg-primary animate-bounce" style={{ animationDelay: '300ms' }} />
-  </div>
-);
-
-const ThinkingBlock: React.FC<{
-  message: CoworkMessage;
-  mapDisplayText?: (value: string) => string;
-}> = ({ message, mapDisplayText }) => {
-  const isCurrentlyStreaming = Boolean(message.metadata?.isStreaming);
-  const [isExpanded, setIsExpanded] = useState(isCurrentlyStreaming);
-  const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
-
-  // Auto-expand while streaming, auto-collapse when streaming completes
-  useEffect(() => {
-    if (isCurrentlyStreaming) {
-      setIsExpanded(true);
-    } else {
-      setIsExpanded(false);
-    }
-  }, [isCurrentlyStreaming]);
-
-  return (
-    <div className="rounded-lg border border-border overflow-hidden">
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-raised transition-colors"
-      >
-        <ChevronRightIcon
-          className={`h-3.5 w-3.5 text-secondary flex-shrink-0 transition-transform duration-200 ${
-            isExpanded ? 'rotate-90' : ''
-          }`}
-        />
-        <span className="text-xs font-medium text-secondary">
-          {i18nService.t('reasoning')}
-        </span>
-        {isCurrentlyStreaming && (
-          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-        )}
-      </button>
-      {isExpanded && (
-        <div className="px-3 pb-3 max-h-64 overflow-y-auto">
-          <div className="text-xs leading-relaxed text-muted whitespace-pre-wrap">
-            {displayContent}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-export const AssistantTurnBlock: React.FC<{
-  turn: ConversationTurn;
-  resolveLocalFilePath?: (href: string, text: string) => string | null;
-  mapDisplayText?: (value: string) => string;
-  showTypingIndicator?: boolean;
-  showCopyButtons?: boolean;
-}> = ({
-  turn,
-  resolveLocalFilePath,
-  mapDisplayText,
-  showTypingIndicator = false,
-  showCopyButtons = true,
-}) => {
-  const visibleAssistantItems = getVisibleAssistantItems(turn.assistantItems);
-
-  const renderSystemMessage = (message: CoworkMessage) => {
-    const isError = !hasText(message.content) && typeof message.metadata?.error === 'string';
-    const rawContent = hasText(message.content)
-      ? message.content
-      : (typeof message.metadata?.error === 'string' ? message.metadata.error : '');
-    const normalizedContent = getScheduledReminderDisplayText(rawContent) ?? rawContent;
-    const content = mapDisplayText ? mapDisplayText(normalizedContent) : normalizedContent;
-    if (!content.trim()) return null;
-
-    return (
-      <div className="rounded-lg border border-border bg-background px-3 py-2">
-        <div className="flex items-center gap-2">
-          {isError
-            ? <ExclamationTriangleIcon className="h-4 w-4 text-secondary flex-shrink-0" />
-            : <InformationCircleIcon className="h-4 w-4 text-secondary flex-shrink-0" />
-          }
-          <div className="text-xs whitespace-pre-wrap text-secondary">
-            {content}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderOrphanToolResult = (message: CoworkMessage) => {
-    const toolResultDisplayRaw = getToolResultDisplay(message);
-    const toolResultDisplay = mapDisplayText ? mapDisplayText(toolResultDisplayRaw) : toolResultDisplayRaw;
-    const isToolError = Boolean(message.metadata?.isError || message.metadata?.error);
-    const hasToolResultText = hasText(toolResultDisplay);
-    const resultLineCount = hasToolResultText ? getToolResultLineCount(toolResultDisplay) : 0;
-    const showNoDetailError = isToolError && !hasToolResultText;
-    const fallbackText = showNoDetailError ? i18nService.t('coworkToolNoErrorDetail') : '';
-    const displayText = hasToolResultText ? toolResultDisplay : fallbackText;
-    return (
-      <div className="py-1">
-        <div className="flex items-start gap-2">
-          <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${
-            isToolError ? 'bg-red-500' : 'bg-surface-raised'
-          }`} />
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-secondary">
-              {i18nService.t('coworkToolResult')}
-            </div>
-            {resultLineCount > 0 && (
-              <div className="text-xs text-muted mt-0.5">
-                {resultLineCount} {resultLineCount === 1 ? 'line' : 'lines'} of output
-              </div>
-            )}
-            {resultLineCount === 0 && showNoDetailError && (
-              <div className={`text-xs mt-0.5 ${
-                isToolError
-                  ? 'text-red-500/80'
-                  : 'text-muted'
-              }`}>
-                {fallbackText}
-              </div>
-            )}
-            {(hasToolResultText || showNoDetailError) && (
-              <div className="mt-2 px-3 py-2 rounded-lg bg-surface-raised max-h-64 overflow-y-auto">
-                <pre className={`text-xs whitespace-pre-wrap break-words font-mono ${
-                  isToolError
-                    ? 'text-red-500'
-                    : hasToolResultText
-                      ? 'text-foreground'
-                      : 'text-secondary italic'
-                }`}>
-                  {displayText}
-                </pre>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="px-4 py-2">
-      <div className="max-w-3xl mx-auto">
-        <div className="flex items-start gap-3">
-          <div className="flex-1 min-w-0 px-4 py-3 space-y-3">
-            {visibleAssistantItems.map((item, index) => {
-              if (item.type === 'assistant') {
-                if (item.message.metadata?.isThinking) {
-                  return (
-                    <ThinkingBlock
-                      key={item.message.id}
-                      message={item.message}
-                      mapDisplayText={mapDisplayText}
-                    />
-                  );
-                }
-                // Check if there are any tool_group items after this assistant message
-                const hasToolGroupAfter = visibleAssistantItems
-                  .slice(index + 1)
-                  .some(laterItem => laterItem.type === 'tool_group');
-
-                return (
-                  <AssistantMessageItem
-                    key={item.message.id}
-                    message={item.message}
-                    resolveLocalFilePath={resolveLocalFilePath}
-                    mapDisplayText={mapDisplayText}
-                    showCopyButton={showCopyButtons && !hasToolGroupAfter}
-                  />
-                );
-              }
-
-              if (item.type === 'tool_group') {
-                const nextItem = visibleAssistantItems[index + 1];
-                const isLastInSequence = !nextItem || nextItem.type !== 'tool_group';
-                return (
-                  <ToolCallGroup
-                    key={`tool-${item.group.toolUse.id}`}
-                    group={item.group}
-                    isLastInSequence={isLastInSequence}
-                    mapDisplayText={mapDisplayText}
-                  />
-                );
-              }
-
-              if (item.type === 'system') {
-                const systemMessage = renderSystemMessage(item.message);
-                if (!systemMessage) {
-                  return null;
-                }
-                return (
-                  <div key={item.message.id}>
-                    {systemMessage}
-                  </div>
-                );
-              }
-
-              return (
-                <div key={item.message.id}>
-                  {renderOrphanToolResult(item.message)}
-                </div>
-              );
-            })}
-            {showTypingIndicator && <TypingDots />}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
+const EMPTY_ARTIFACTS: Artifact[] = [];
 
 const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   onManageSkills,
   onContinue,
   onStop,
-  onDeleteSession,
-  onNavigateHome,
   isSidebarCollapsed,
   onToggleSidebar,
   onNewChat,
@@ -1586,16 +505,60 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const lastMessageContent = useSelector(selectLastMessageContent);
   const messagesLength = useSelector(selectCurrentMessagesLength);
   const skills = useSelector((state: RootState) => state.skill.skills);
+  const contextUsage = useSelector((state: RootState) =>
+    currentSession?.id ? state.cowork.contextUsageBySessionId[currentSession.id] : undefined
+  );
+  const isContextCompacting = useSelector((state: RootState) =>
+    currentSession?.id ? state.cowork.compactingSessionIds.includes(currentSession.id) : false
+  );
+  const isContextMaintenance = useSelector((state: RootState) =>
+    currentSession?.id ? state.cowork.contextMaintenanceSessionIds.includes(currentSession.id) : false
+  );
+  const isContextBusy = isContextCompacting || isContextMaintenance;
+  const isSessionBusy = isStreaming || isContextMaintenance;
   const detailRootRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const promptInputRef = useRef<CoworkPromptInputRef>(null);
+  const compactConfirmRef = useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
+  const [showCompactConfirm, setShowCompactConfirm] = useState(false);
+  const isLoadingMoreMessagesRef = useRef(false);
+  const prevScrollHeightRef = useRef<number | null>(null);
 
   // Clear lazy-render height cache when session changes
   const sessionId = currentSession?.id;
   useEffect(() => {
     clearHeightCache();
   }, [sessionId]);
+
+  useEffect(() => {
+    setShowCompactConfirm(false);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!showCompactConfirm) return undefined;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && compactConfirmRef.current?.contains(target)) {
+        return;
+      }
+      setShowCompactConfirm(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowCompactConfirm(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showCompactConfirm]);
 
   // Rail navigation states
   const [currentRailIndex, setCurrentRailIndex] = useState(-1);
@@ -1612,41 +575,838 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const [isRailHovered, setIsRailHovered] = useState(false);
   const [railTooltip, setRailTooltip] = useState<{ label: string; top: number; right: number; isUser: boolean } | null>(null);
 
-  // Menu and action states
-  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const actionButtonRef = useRef<HTMLButtonElement>(null);
-  const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+  // Export states
   const [isExportingImage, setIsExportingImage] = useState(false);
   const [showExportOptions, setShowExportOptions] = useState(false);
-
-  // Rename states
-  const [isRenaming, setIsRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState('');
-  const renameInputRef = useRef<HTMLInputElement>(null);
-  const ignoreNextBlurRef = useRef(false);
-
-  // Reset rename value when session changes
-  useEffect(() => {
-    if (!isRenaming && currentSession) {
-      setRenameValue(currentSession.title);
-      ignoreNextBlurRef.current = false;
-    }
-  }, [isRenaming, currentSession?.title]);
 
   useEffect(() => {
     setShouldAutoScroll(true);
   }, [currentSession?.id]);
 
-  // Focus rename input when entering rename mode
-  useEffect(() => {
-    if (!isRenaming) return;
-    requestAnimationFrame(() => {
-      renameInputRef.current?.focus();
-      renameInputRef.current?.select();
-    });
-  }, [isRenaming]);
+  const handleCompactContext = useCallback(() => {
+    if (!currentSession?.id) {
+      console.warn('[CoworkSessionDetail] manual context compaction was ignored because no session is selected.');
+      return;
+    }
+    if (isContextBusy) {
+      console.debug('[CoworkSessionDetail] manual context compaction was ignored because compaction is already running.');
+      return;
+    }
+    if (isSessionBusy || currentSession.status === CoworkSessionStatusValue.Running) {
+      console.debug('[CoworkSessionDetail] manual context compaction was ignored because the session is still running.');
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t('coworkContextCompactBlockedRunning'),
+      }));
+      return;
+    }
+    console.debug('[CoworkSessionDetail] manual context compaction confirmation toggled.');
+    setShowCompactConfirm(prev => !prev);
+  }, [currentSession?.id, currentSession?.status, isContextBusy, isSessionBusy]);
 
+  const handleCancelCompactContext = useCallback(() => {
+    console.debug('[CoworkSessionDetail] manual context compaction was canceled by the user.');
+    setShowCompactConfirm(false);
+  }, []);
+
+  const handleConfirmCompactContext = useCallback(() => {
+    if (!currentSession?.id) {
+      setShowCompactConfirm(false);
+      console.warn('[CoworkSessionDetail] manual context compaction confirmation was ignored because no session is selected.');
+      return;
+    }
+    console.log(`[CoworkSessionDetail] manual context compaction confirmed for session ${currentSession.id}.`);
+    setShowCompactConfirm(false);
+    void coworkService.compactContext(currentSession.id);
+  }, [currentSession?.id]);
+
+  // ─── Artifact detection ─────────────────────────────────────────────
+  const isPanelOpen = useSelector((state: RootState) => selectIsPanelOpen(state, sessionId));
+  const panelWidth = useSelector(selectPanelWidth);
+  const [shouldRenderArtifactPanel, setShouldRenderArtifactPanel] = useState(isPanelOpen);
+  const [isArtifactPanelVisible, setIsArtifactPanelVisible] = useState(isPanelOpen);
+  const [isArtifactPanelTransitioning, setIsArtifactPanelTransitioning] = useState(false);
+  const [isFileListPreviewTabOpen, setIsFileListPreviewTabOpen] = useState(isPanelOpen);
+  const [isBrowserPreviewTabOpen, setIsBrowserPreviewTabOpen] = useState(false);
+  const [activeSpecialPreviewTab, setActiveSpecialPreviewTab] = useState<ArtifactSpecialTab>(ArtifactSpecialTab.FileList);
+  const [browserPreviewAddress, setBrowserPreviewAddress] = useState('');
+  const [browserPreviewUrl, setBrowserPreviewUrl] = useState('');
+  const [showArtifactAddMenu, setShowArtifactAddMenu] = useState(false);
+  const [artifactAddMenuPosition, setArtifactAddMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const [artifactTabsCanScrollLeft, setArtifactTabsCanScrollLeft] = useState(false);
+  const [artifactTabsCanScrollRight, setArtifactTabsCanScrollRight] = useState(false);
+  const [artifactTabsIsOverflowing, setArtifactTabsIsOverflowing] = useState(false);
+  const [artifactPanelMinWidth, setArtifactPanelMinWidth] = useState(MIN_PANEL_WIDTH);
+  const [artifactPanelMaxWidth, setArtifactPanelMaxWidth] = useState(MAX_PANEL_WIDTH);
+  const previousArtifactPanelOpenRef = useRef(isPanelOpen);
+  const fileListPreviewTabOpenBySessionRef = useRef<Record<string, boolean>>({});
+  const browserPreviewTabOpenBySessionRef = useRef<Record<string, boolean>>({});
+  const activeSpecialPreviewTabBySessionRef = useRef<Record<string, ArtifactSpecialTab>>({});
+  const browserPreviewAddressBySessionRef = useRef<Record<string, string>>({});
+  const browserPreviewUrlBySessionRef = useRef<Record<string, string>>({});
+  const artifactAddButtonRef = useRef<HTMLButtonElement>(null);
+  const artifactAddMenuRef = useRef<HTMLDivElement>(null);
+  const artifactTabsScrollRef = useRef<HTMLDivElement>(null);
+  const contentRowRef = useRef<HTMLDivElement>(null);
+  const sessionArtifacts = useSelector((state: RootState) =>
+    sessionId ? selectSessionArtifacts(state, sessionId) : EMPTY_ARTIFACTS
+  );
+  const artifactPreviewTabs = useSelector((state: RootState) =>
+    sessionId ? selectPreviewTabs(state, sessionId) : []
+  );
+  const activeArtifactPreviewTab = useSelector((state: RootState) =>
+    sessionId ? selectActivePreviewTab(state, sessionId) : null
+  );
+  const artifactTabsWithArtifacts = useMemo(() => {
+    const artifactsById = new Map(sessionArtifacts.map(artifact => [artifact.id, artifact]));
+    return artifactPreviewTabs
+      .map(tab => ({ tab, artifact: artifactsById.get(tab.artifactId) }))
+      .filter((item): item is { tab: typeof artifactPreviewTabs[number]; artifact: Artifact } => Boolean(item.artifact));
+  }, [artifactPreviewTabs, sessionArtifacts]);
+  const shouldPinArtifactAddTab = artifactTabsIsOverflowing || artifactTabsCanScrollLeft || artifactTabsCanScrollRight;
+
+  const loadedFileIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    let animationFrame: number | undefined;
+    let transitionTimeout: number | undefined;
+    const wasOpen = previousArtifactPanelOpenRef.current;
+
+    previousArtifactPanelOpenRef.current = isPanelOpen;
+
+    if (wasOpen === isPanelOpen) {
+      return undefined;
+    }
+
+    if (isPanelOpen) {
+      setShouldRenderArtifactPanel(true);
+      setIsArtifactPanelVisible(false);
+      setIsArtifactPanelTransitioning(true);
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = window.requestAnimationFrame(() => {
+          setIsArtifactPanelVisible(true);
+          transitionTimeout = window.setTimeout(() => {
+            setIsArtifactPanelTransitioning(false);
+          }, ARTIFACT_PANEL_TRANSITION_MS);
+        });
+      });
+    } else {
+      setIsArtifactPanelTransitioning(true);
+      setIsArtifactPanelVisible(false);
+      transitionTimeout = window.setTimeout(() => {
+        setShouldRenderArtifactPanel(false);
+        setIsArtifactPanelTransitioning(false);
+      }, ARTIFACT_PANEL_TRANSITION_MS);
+    }
+
+    return () => {
+      if (animationFrame !== undefined) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      if (transitionTimeout !== undefined) {
+        window.clearTimeout(transitionTimeout);
+      }
+    };
+  }, [isPanelOpen]);
+
+  const updateArtifactPanelMaxWidth = useCallback(() => {
+    const contentWidth = contentRowRef.current?.clientWidth ?? 0;
+    if (contentWidth <= 0) return;
+    const availablePanelWidth = contentWidth - COWORK_DETAIL_MIN_WIDTH - ARTIFACT_PANEL_RESIZE_HANDLE_WIDTH;
+    const nextMaxWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, availablePanelWidth));
+    const proportionalMinWidth = Math.floor(contentWidth * ARTIFACT_PANEL_MIN_WIDTH_RATIO);
+    const nextMinWidth = Math.min(nextMaxWidth, Math.max(MIN_PANEL_WIDTH, proportionalMinWidth));
+    setArtifactPanelMinWidth(nextMinWidth);
+    setArtifactPanelMaxWidth(nextMaxWidth);
+  }, []);
+
+  useLayoutEffect(() => {
+    updateArtifactPanelMaxWidth();
+    const container = contentRowRef.current;
+    window.addEventListener('resize', updateArtifactPanelMaxWidth);
+
+    if (typeof ResizeObserver === 'undefined' || !container) {
+      return () => {
+        window.removeEventListener('resize', updateArtifactPanelMaxWidth);
+      };
+    }
+
+    const resizeObserver = new ResizeObserver(updateArtifactPanelMaxWidth);
+    resizeObserver.observe(container);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateArtifactPanelMaxWidth);
+    };
+  }, [currentSession?.id, updateArtifactPanelMaxWidth]);
+
+  useEffect(() => {
+    setIsFileListPreviewTabOpen(sessionId ? fileListPreviewTabOpenBySessionRef.current[sessionId] ?? false : false);
+    setIsBrowserPreviewTabOpen(sessionId ? browserPreviewTabOpenBySessionRef.current[sessionId] ?? false : false);
+    setActiveSpecialPreviewTab(sessionId
+      ? activeSpecialPreviewTabBySessionRef.current[sessionId] ?? ArtifactSpecialTab.FileList
+      : ArtifactSpecialTab.FileList);
+    setBrowserPreviewAddress(sessionId ? browserPreviewAddressBySessionRef.current[sessionId] ?? '' : '');
+    setBrowserPreviewUrl(sessionId ? browserPreviewUrlBySessionRef.current[sessionId] ?? '' : '');
+    setShowArtifactAddMenu(false);
+    loadedFileIdsRef.current = new Set();
+  }, [sessionId]);
+
+  const setSessionFileListPreviewTabOpen = useCallback((open: boolean) => {
+    setIsFileListPreviewTabOpen(open);
+    if (sessionId) {
+      fileListPreviewTabOpenBySessionRef.current[sessionId] = open;
+    }
+  }, [sessionId]);
+
+  const setSessionBrowserPreviewTabOpen = useCallback((open: boolean) => {
+    setIsBrowserPreviewTabOpen(open);
+    if (sessionId) {
+      browserPreviewTabOpenBySessionRef.current[sessionId] = open;
+    }
+  }, [sessionId]);
+
+  const setSessionActiveSpecialPreviewTab = useCallback((tab: ArtifactSpecialTab) => {
+    setActiveSpecialPreviewTab(tab);
+    if (sessionId) {
+      activeSpecialPreviewTabBySessionRef.current[sessionId] = tab;
+    }
+  }, [sessionId]);
+
+  const handleBrowserPreviewAddressChange = useCallback((value: string) => {
+    setBrowserPreviewAddress(value);
+    if (sessionId) {
+      browserPreviewAddressBySessionRef.current[sessionId] = value;
+    }
+  }, [sessionId]);
+
+  const handleBrowserPreviewUrlChange = useCallback((value: string) => {
+    setBrowserPreviewUrl(value);
+    if (sessionId) {
+      browserPreviewUrlBySessionRef.current[sessionId] = value;
+    }
+  }, [sessionId]);
+
+  const clearBrowserPreviewState = useCallback(() => {
+    setBrowserPreviewAddress('');
+    setBrowserPreviewUrl('');
+    if (sessionId) {
+      delete browserPreviewAddressBySessionRef.current[sessionId];
+      delete browserPreviewUrlBySessionRef.current[sessionId];
+    }
+  }, [sessionId]);
+
+  const handleOpenArtifactFileListTab = useCallback(() => {
+    setSessionFileListPreviewTabOpen(true);
+    setSessionActiveSpecialPreviewTab(ArtifactSpecialTab.FileList);
+    if (sessionId) {
+      dispatch(activateArtifactFileListTab({ sessionId }));
+    }
+  }, [dispatch, sessionId, setSessionActiveSpecialPreviewTab, setSessionFileListPreviewTabOpen]);
+
+  const handleActivateArtifactFileListTab = useCallback(() => {
+    if (!sessionId) return;
+    setSessionFileListPreviewTabOpen(true);
+    setSessionActiveSpecialPreviewTab(ArtifactSpecialTab.FileList);
+    dispatch(activateArtifactFileListTab({ sessionId }));
+  }, [dispatch, sessionId, setSessionActiveSpecialPreviewTab, setSessionFileListPreviewTabOpen]);
+
+  const handleOpenArtifactBrowserTab = useCallback(() => {
+    setShowArtifactAddMenu(false);
+    if (!sessionId) return;
+    setSessionBrowserPreviewTabOpen(true);
+    setSessionActiveSpecialPreviewTab(ArtifactSpecialTab.Browser);
+    dispatch(activateArtifactBrowserTab({ sessionId }));
+  }, [dispatch, sessionId, setSessionActiveSpecialPreviewTab, setSessionBrowserPreviewTabOpen]);
+
+  const handleOpenLocalServiceArtifact = useCallback((artifact: Artifact) => {
+    const url = artifact.url || artifact.content;
+    if (!url) return;
+    handleOpenArtifactBrowserTab();
+    handleBrowserPreviewAddressChange(url);
+    handleBrowserPreviewUrlChange(url);
+  }, [handleBrowserPreviewAddressChange, handleBrowserPreviewUrlChange, handleOpenArtifactBrowserTab]);
+
+  const handleOpenArtifactFileListFromMenu = useCallback(() => {
+    setShowArtifactAddMenu(false);
+    handleOpenArtifactFileListTab();
+  }, [handleOpenArtifactFileListTab]);
+
+  const handleCloseArtifactFileListTab = useCallback(() => {
+    const wasActive = !activeArtifactPreviewTab && activeSpecialPreviewTab === ArtifactSpecialTab.FileList;
+    setSessionFileListPreviewTabOpen(false);
+    if (!sessionId) {
+      dispatch(closePanel(undefined));
+      return;
+    }
+
+    if (!wasActive) return;
+
+    const nextTabId = artifactTabsWithArtifacts[0]?.tab.id;
+    if (nextTabId) {
+      dispatch(activateArtifactPreviewTab({ sessionId, tabId: nextTabId }));
+      return;
+    }
+
+    if (isBrowserPreviewTabOpen) {
+      setSessionActiveSpecialPreviewTab(ArtifactSpecialTab.Browser);
+      dispatch(activateArtifactBrowserTab({ sessionId }));
+      return;
+    }
+
+    dispatch(closePanel({ sessionId }));
+  }, [
+    activeArtifactPreviewTab,
+    activeSpecialPreviewTab,
+    artifactTabsWithArtifacts,
+    dispatch,
+    isBrowserPreviewTabOpen,
+    sessionId,
+    setSessionActiveSpecialPreviewTab,
+    setSessionFileListPreviewTabOpen,
+  ]);
+
+  const handleActivateArtifactBrowserTab = useCallback(() => {
+    if (!sessionId) return;
+    setSessionBrowserPreviewTabOpen(true);
+    setSessionActiveSpecialPreviewTab(ArtifactSpecialTab.Browser);
+    dispatch(activateArtifactBrowserTab({ sessionId }));
+  }, [dispatch, sessionId, setSessionActiveSpecialPreviewTab, setSessionBrowserPreviewTabOpen]);
+
+  const handleCloseArtifactBrowserTab = useCallback(() => {
+    const wasActive = !activeArtifactPreviewTab && activeSpecialPreviewTab === ArtifactSpecialTab.Browser;
+    setSessionBrowserPreviewTabOpen(false);
+    clearBrowserPreviewState();
+    if (!sessionId) {
+      dispatch(closePanel(undefined));
+      return;
+    }
+
+    if (!wasActive) return;
+
+    const nextTabId = artifactTabsWithArtifacts[0]?.tab.id;
+    if (nextTabId) {
+      dispatch(activateArtifactPreviewTab({ sessionId, tabId: nextTabId }));
+      return;
+    }
+
+    if (isFileListPreviewTabOpen) {
+      setSessionActiveSpecialPreviewTab(ArtifactSpecialTab.FileList);
+      dispatch(activateArtifactFileListTab({ sessionId }));
+      return;
+    }
+
+    dispatch(closePanel({ sessionId }));
+  }, [
+    activeArtifactPreviewTab,
+    activeSpecialPreviewTab,
+    artifactTabsWithArtifacts,
+    dispatch,
+    clearBrowserPreviewState,
+    isFileListPreviewTabOpen,
+    sessionId,
+    setSessionActiveSpecialPreviewTab,
+    setSessionBrowserPreviewTabOpen,
+  ]);
+
+  const handleActivateArtifactTab = useCallback((tabId: string) => {
+    if (!sessionId) return;
+    dispatch(activateArtifactPreviewTab({ sessionId, tabId }));
+  }, [dispatch, sessionId]);
+
+  const handleCloseArtifactTab = useCallback((tabId: string) => {
+    if (!sessionId) return;
+    const remainingTabs = artifactTabsWithArtifacts.filter(({ tab }) => tab.id !== tabId);
+    dispatch(closeArtifactPreviewTab({ sessionId, tabId }));
+    if (remainingTabs.length === 0 && !isFileListPreviewTabOpen && !isBrowserPreviewTabOpen) {
+      dispatch(closePanel({ sessionId }));
+    }
+  }, [artifactTabsWithArtifacts, dispatch, isBrowserPreviewTabOpen, isFileListPreviewTabOpen, sessionId]);
+
+  const handleToggleArtifactPanel = useCallback(() => {
+    if (isPanelOpen) {
+      setShowArtifactAddMenu(false);
+      dispatch(closePanel(sessionId ? { sessionId } : undefined));
+      return;
+    }
+
+    if (!sessionId) {
+      dispatch(togglePanel(undefined));
+      return;
+    }
+
+    if (artifactTabsWithArtifacts.length === 0 && !isFileListPreviewTabOpen && !isBrowserPreviewTabOpen) {
+      setSessionFileListPreviewTabOpen(true);
+      setSessionActiveSpecialPreviewTab(ArtifactSpecialTab.FileList);
+      dispatch(activateArtifactFileListTab({ sessionId }));
+      return;
+    }
+
+    dispatch(togglePanel({ sessionId }));
+  }, [
+    artifactTabsWithArtifacts.length,
+    dispatch,
+    isBrowserPreviewTabOpen,
+    isFileListPreviewTabOpen,
+    isPanelOpen,
+    sessionId,
+    setSessionActiveSpecialPreviewTab,
+    setSessionFileListPreviewTabOpen,
+  ]);
+
+  const handleToggleArtifactAddMenu = useCallback(() => {
+    setShowArtifactAddMenu(open => !open);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!showArtifactAddMenu) {
+      setArtifactAddMenuPosition(null);
+      return undefined;
+    }
+
+    const updateMenuPosition = () => {
+      const rect = artifactAddButtonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setArtifactAddMenuPosition({
+        left: Math.round(Math.max(8, Math.min(window.innerWidth - 184, rect.right - 176))),
+        top: Math.round(rect.bottom + 6),
+      });
+    };
+
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
+    };
+  }, [showArtifactAddMenu]);
+
+  const updateArtifactTabsScrollState = useCallback(() => {
+    const element = artifactTabsScrollRef.current;
+    if (!element) {
+      setArtifactTabsCanScrollLeft(false);
+      setArtifactTabsCanScrollRight(false);
+      setArtifactTabsIsOverflowing(false);
+      return;
+    }
+
+    const maxScrollLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+    setArtifactTabsCanScrollLeft(element.scrollLeft > 1);
+    setArtifactTabsCanScrollRight(element.scrollLeft < maxScrollLeft - 1);
+    setArtifactTabsIsOverflowing(element.scrollWidth > element.clientWidth + 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    const container = artifactTabsScrollRef.current;
+    if (!container || !isArtifactPanelVisible) return undefined;
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const activeTab = container.querySelector<HTMLElement>('[data-artifact-preview-active="true"]');
+      if (!activeTab) {
+        updateArtifactTabsScrollState();
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const activeRect = activeTab.getBoundingClientRect();
+      const visibleLeft = containerRect.left;
+      const visibleRight = containerRect.right - (shouldPinArtifactAddTab ? 36 : 0);
+      const padding = 8;
+
+      if (activeRect.left < visibleLeft + padding) {
+        container.scrollLeft -= visibleLeft + padding - activeRect.left;
+      } else if (activeRect.right > visibleRight - padding) {
+        container.scrollLeft += activeRect.right - visibleRight + padding;
+      }
+
+      updateArtifactTabsScrollState();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, [
+    activeArtifactPreviewTab?.id,
+    activeSpecialPreviewTab,
+    isArtifactPanelVisible,
+    isBrowserPreviewTabOpen,
+    isFileListPreviewTabOpen,
+    shouldPinArtifactAddTab,
+    updateArtifactTabsScrollState,
+  ]);
+
+  useLayoutEffect(() => {
+    const element = artifactTabsScrollRef.current;
+    if (!element || !isArtifactPanelVisible) {
+      setArtifactTabsCanScrollLeft(false);
+      setArtifactTabsCanScrollRight(false);
+      setArtifactTabsIsOverflowing(false);
+      return undefined;
+    }
+
+    updateArtifactTabsScrollState();
+    const animationFrame = window.requestAnimationFrame(updateArtifactTabsScrollState);
+    element.addEventListener('scroll', updateArtifactTabsScrollState, { passive: true });
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(updateArtifactTabsScrollState)
+      : null;
+    resizeObserver?.observe(element);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      element.removeEventListener('scroll', updateArtifactTabsScrollState);
+      resizeObserver?.disconnect();
+    };
+  }, [
+    activeArtifactPreviewTab?.id,
+    activeSpecialPreviewTab,
+    artifactPanelMaxWidth,
+    artifactPanelMinWidth,
+    artifactTabsWithArtifacts.length,
+    isArtifactPanelVisible,
+    isBrowserPreviewTabOpen,
+    isFileListPreviewTabOpen,
+    panelWidth,
+    updateArtifactTabsScrollState,
+  ]);
+
+  useEffect(() => {
+    if (!showArtifactAddMenu) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (artifactAddMenuRef.current?.contains(target) || artifactAddButtonRef.current?.contains(target)) {
+        return;
+      }
+      setShowArtifactAddMenu(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowArtifactAddMenu(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showArtifactAddMenu]);
+
+  useEffect(() => {
+    if (!sessionId || !currentSession?.messages?.length) return;
+    if (isStreaming) return;
+
+    try {
+      const messages = currentSession.messages;
+      const detected: Artifact[] = [];
+      const seenFilePaths = new Set<string>();
+      const seenLocalServiceUrls = new Set<string>();
+      const rememberArtifactFilePaths = (artifacts: Artifact[]) => {
+        for (const artifact of artifacts) {
+          if (artifact.filePath) {
+            seenFilePaths.add(normalizeFilePathForDedup(artifact.filePath));
+          }
+        }
+      };
+
+      for (const msg of messages) {
+        if (msg.type === 'assistant' && !msg.metadata?.isThinking && msg.content) {
+          const localServiceArtifacts = parseLocalServiceUrlsFromText(msg.content, msg.id, sessionId);
+          for (const serviceArtifact of localServiceArtifacts) {
+            const url = serviceArtifact.url || serviceArtifact.content;
+            const normalized = normalizeLocalServiceUrlForDedup(url);
+            if (url && !seenLocalServiceUrls.has(normalized)) {
+              seenLocalServiceUrls.add(normalized);
+              detected.push(serviceArtifact);
+            }
+          }
+
+          const fileLinks = parseFileLinksFromMessage(msg.content, msg.id, sessionId);
+          for (const fl of fileLinks) {
+            const normalized = fl.filePath ? normalizeFilePathForDedup(fl.filePath) : '';
+            if (fl.filePath && !seenFilePaths.has(normalized)) {
+              seenFilePaths.add(normalized);
+              detected.push(fl);
+            }
+          }
+
+          const contentWithoutFileLinks = stripFileLinksFromText(msg.content);
+          const pathArtifacts = parseFilePathsFromText(contentWithoutFileLinks, msg.id, sessionId);
+          for (const pa of pathArtifacts) {
+            const normalized = pa.filePath ? normalizeFilePathForDedup(pa.filePath) : '';
+            if (pa.filePath && !seenFilePaths.has(normalized)) {
+              seenFilePaths.add(normalized);
+              detected.push(pa);
+            }
+          }
+
+          detected.push(...parseRemoteImageArtifactsFromText(msg.content, msg.id, sessionId, 'artifact-remote-assistant'));
+        }
+
+        if (msg.type === 'tool_result') {
+          const toolMediaArtifacts = parseToolResultMediaArtifacts(msg, sessionId);
+          if (toolMediaArtifacts.length > 0) {
+            detected.push(...toolMediaArtifacts);
+            rememberArtifactFilePaths(toolMediaArtifacts);
+            continue;
+          }
+
+          if (!msg.content) continue;
+
+          const mediaArtifacts = parseMediaTokensFromText(msg.content, msg.id, sessionId);
+          for (const ma of mediaArtifacts) {
+            const normalized = ma.filePath ? normalizeFilePathForDedup(ma.filePath) : '';
+            if (ma.filePath && !seenFilePaths.has(normalized)) {
+              seenFilePaths.add(normalized);
+              detected.push(ma);
+            }
+          }
+          const pathArtifacts = parseFilePathsFromText(msg.content, msg.id, sessionId, 'artifact-toolresult');
+          for (const pa of pathArtifacts) {
+            const normalized = pa.filePath ? normalizeFilePathForDedup(pa.filePath) : '';
+            if (pa.filePath && !seenFilePaths.has(normalized)) {
+              seenFilePaths.add(normalized);
+              detected.push(pa);
+            }
+          }
+          detected.push(...parseRemoteImageArtifactsFromText(msg.content, msg.id, sessionId, 'artifact-remote-toolresult'));
+        }
+
+        if (msg.type === 'system') {
+          const toolMediaArtifacts = parseToolResultMediaArtifacts(msg, sessionId);
+          if (toolMediaArtifacts.length > 0) {
+            detected.push(...toolMediaArtifacts);
+            rememberArtifactFilePaths(toolMediaArtifacts);
+            continue;
+          }
+
+          if (!msg.content) continue;
+
+          const fileLinks = parseFileLinksFromMessage(msg.content, msg.id, sessionId);
+          for (const fl of fileLinks) {
+            const normalized = fl.filePath ? normalizeFilePathForDedup(fl.filePath) : '';
+            if (fl.filePath && !seenFilePaths.has(normalized)) {
+              seenFilePaths.add(normalized);
+              detected.push(fl);
+            }
+          }
+
+          const contentWithoutFileLinks = stripFileLinksFromText(msg.content);
+          const pathArtifacts = parseFilePathsFromText(contentWithoutFileLinks, msg.id, sessionId, 'artifact-system-path');
+          for (const pa of pathArtifacts) {
+            const normalized = pa.filePath ? normalizeFilePathForDedup(pa.filePath) : '';
+            if (pa.filePath && !seenFilePaths.has(normalized)) {
+              seenFilePaths.add(normalized);
+              detected.push(pa);
+            }
+          }
+
+          detected.push(...parseRemoteImageArtifactsFromText(msg.content, msg.id, sessionId, 'artifact-remote-system'));
+        }
+      }
+
+      for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        if (msg.type === 'tool_use') {
+          const toolUseId = msg.metadata?.toolUseId;
+          const toolResult = toolUseId
+            ? messages.find(m => m.type === 'tool_result' && m.metadata?.toolUseId === toolUseId)
+            : messages[i + 1]?.type === 'tool_result' ? messages[i + 1] : undefined;
+          const toolArtifact = parseToolArtifact(msg, toolResult, sessionId);
+          if (toolArtifact && toolArtifact.filePath) {
+            const normalized = normalizeFilePathForDedup(toolArtifact.filePath);
+            if (!seenFilePaths.has(normalized)) {
+              seenFilePaths.add(normalized);
+              detected.push(toolArtifact);
+            }
+          }
+        }
+      }
+
+      const cwd = currentSession.cwd;
+      for (const artifact of detected) {
+        if (artifact.type === ArtifactTypeValue.LocalService) {
+          dispatch(addArtifact({ sessionId, artifact }));
+        }
+      }
+
+      const toLoad = detected.filter(a => a.filePath && !loadedFileIdsRef.current.has(a.id));
+      if (toLoad.length === 0) return;
+
+      const loadFiles = async () => {
+        for (const artifact of toLoad) {
+          let rawPath = artifact.filePath!;
+          if (rawPath.startsWith('file:///')) {
+            rawPath = rawPath.slice(7);
+          } else if (rawPath.startsWith('file://')) {
+            rawPath = rawPath.slice(7);
+          } else if (rawPath.startsWith('file:/')) {
+            rawPath = rawPath.slice(5);
+          }
+          // Strip leading / before Windows drive letter
+          if (/^\/[A-Za-z]:/.test(rawPath)) {
+            rawPath = rawPath.slice(1);
+          }
+          const absPath = rawPath.startsWith('/')
+            ? rawPath
+            : (/^[A-Za-z]:/.test(rawPath) ? rawPath : `${cwd}/${rawPath}`);
+          if (artifact.type === 'video') {
+            loadedFileIdsRef.current.add(artifact.id);
+            dispatch(addArtifact({
+              sessionId,
+              artifact: { ...artifact, content: '', filePath: absPath },
+            }));
+            continue;
+          }
+          if (artifact.type === ArtifactTypeValue.Html) {
+            try {
+              const stat = await window.electron.dialog.statFile(absPath);
+              if (stat?.success && stat.isFile) {
+                dispatch(addArtifact({
+                  sessionId,
+                  artifact: { ...artifact, content: '', filePath: absPath, contentVersion: Date.now() },
+                }));
+              }
+            } catch {
+              // File unreadable or missing.
+            }
+            loadedFileIdsRef.current.add(artifact.id);
+            continue;
+          }
+          try {
+            const result = await window.electron.dialog.readFileAsDataUrl(absPath);
+            if (result?.success && result.dataUrl) {
+              const isTextType = artifact.type !== 'image' && artifact.type !== 'document';
+              let content = result.dataUrl;
+              if (isTextType) {
+                try {
+                  const base64 = result.dataUrl.split(',')[1] || '';
+                  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+                  content = new TextDecoder('utf-8').decode(bytes);
+                } catch {
+                  content = result.dataUrl;
+                }
+              }
+              loadedFileIdsRef.current.add(artifact.id);
+              dispatch(addArtifact({
+                sessionId,
+                artifact: { ...artifact, content, filePath: absPath },
+              }));
+            } else {
+              // File does not exist or is unreadable — mark as loaded to avoid retrying
+              loadedFileIdsRef.current.add(artifact.id);
+            }
+          } catch {
+            // File unreadable or missing — mark as loaded to avoid retrying
+            loadedFileIdsRef.current.add(artifact.id);
+          }
+        }
+      };
+      loadFiles();
+    } catch (err) {
+      console.error('[ArtifactDetection] failed:', err);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- uses messagesLength as stable proxy for currentSession.messages
+  }, [sessionId, messagesLength, isStreaming, dispatch]);
+
+  // Mid-turn artifact detection: detect MEDIA/file artifacts from backfilled tool results
+  // while still streaming. The main effect above skips when isStreaming=true, but incremental
+  // backfill can populate tool_result text mid-turn. This effect handles that case.
+  useEffect(() => {
+    if (!sessionId || !isStreaming || !currentSession?.messages?.length) return;
+
+    try {
+      const messages = currentSession.messages;
+      const cwd = currentSession.cwd;
+      const toLoad: Artifact[] = [];
+      const seenFilePaths = new Set<string>();
+
+      for (const msg of messages) {
+        if (msg.type !== 'tool_result' || !msg.content || !msg.metadata?.isFinal) continue;
+        if (loadedFileIdsRef.current.has(msg.id)) continue;
+
+        // Only detect explicit MEDIA: tokens in tool results — do NOT parse bare file paths
+        // here, because tool output (e.g. `ls`) may contain many irrelevant file paths.
+        const mediaArtifacts = parseMediaTokensFromText(msg.content, msg.id, sessionId);
+        for (const ma of mediaArtifacts) {
+          const normalized = ma.filePath ? normalizeFilePathForDedup(ma.filePath) : '';
+          if (ma.filePath && !seenFilePaths.has(normalized) && !loadedFileIdsRef.current.has(ma.id)) {
+            seenFilePaths.add(normalized);
+            toLoad.push(ma);
+          }
+        }
+      }
+
+      if (toLoad.length === 0) return;
+
+      const loadFiles = async () => {
+        for (const artifact of toLoad) {
+          if (loadedFileIdsRef.current.has(artifact.id)) continue;
+          let rawPath = artifact.filePath!;
+          if (rawPath.startsWith('file:///')) {
+            rawPath = rawPath.slice(7);
+          } else if (rawPath.startsWith('file://')) {
+            rawPath = rawPath.slice(7);
+          } else if (rawPath.startsWith('file:/')) {
+            rawPath = rawPath.slice(5);
+          }
+          if (/^\/[A-Za-z]:/.test(rawPath)) {
+            rawPath = rawPath.slice(1);
+          }
+          const absPath = rawPath.startsWith('/')
+            ? rawPath
+            : (/^[A-Za-z]:/.test(rawPath) ? rawPath : `${cwd}/${rawPath}`);
+          if (artifact.type === ArtifactTypeValue.Html) {
+            try {
+              const stat = await window.electron.dialog.statFile(absPath);
+              if (stat?.success && stat.isFile) {
+                dispatch(addArtifact({
+                  sessionId,
+                  artifact: { ...artifact, content: '', filePath: absPath, contentVersion: Date.now() },
+                }));
+              }
+            } catch {
+              // File unreadable or missing.
+            }
+            loadedFileIdsRef.current.add(artifact.id);
+            continue;
+          }
+          try {
+            const result = await window.electron.dialog.readFileAsDataUrl(absPath);
+            if (result?.success && result.dataUrl) {
+              const isTextType = artifact.type !== 'image' && artifact.type !== 'document';
+              let content = result.dataUrl;
+              if (isTextType) {
+                try {
+                  const base64 = result.dataUrl.split(',')[1] || '';
+                  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+                  content = new TextDecoder('utf-8').decode(bytes);
+                } catch {
+                  content = result.dataUrl;
+                }
+              }
+              loadedFileIdsRef.current.add(artifact.id);
+              dispatch(addArtifact({
+                sessionId,
+                artifact: { ...artifact, content, filePath: absPath },
+              }));
+            } else {
+              loadedFileIdsRef.current.add(artifact.id);
+            }
+          } catch {
+            loadedFileIdsRef.current.add(artifact.id);
+          }
+        }
+      };
+      loadFiles();
+    } catch (err) {
+      console.error('[ArtifactDetection:midTurn] failed:', err);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mid-turn artifact detection for backfilled tool results
+  }, [sessionId, messagesLength, isStreaming, dispatch]);
   // Cleanup nav timers on unmount
   useEffect(() => {
     return () => {
@@ -1665,136 +1425,18 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     setHoveredRailIndex(null);
   }, [currentSession?.id]);
 
-  // Close menu on outside click
   useEffect(() => {
-    if (!menuPosition) return;
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!menuRef.current?.contains(target) && !actionButtonRef.current?.contains(target)) {
-        closeMenu();
-      }
+    const handleOpenShareOptions = (event: Event) => {
+      const detail = (event as CustomEvent<CoworkOpenShareOptionsEventDetail>).detail;
+      if (!detail?.sessionId || detail.sessionId !== currentSession?.id) return;
+      setShowExportOptions(true);
     };
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeMenu();
-      }
-    };
-    const handleScroll = () => closeMenu();
-    document.addEventListener('mousedown', handleClickOutside);
-    document.addEventListener('keydown', handleEscape);
-    window.addEventListener('scroll', handleScroll, true);
-    window.addEventListener('resize', handleScroll);
+
+    window.addEventListener(CoworkUiEvent.OpenShareOptions, handleOpenShareOptions);
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('keydown', handleEscape);
-      window.removeEventListener('scroll', handleScroll, true);
-      window.removeEventListener('resize', handleScroll);
+      window.removeEventListener(CoworkUiEvent.OpenShareOptions, handleOpenShareOptions);
     };
-  }, [menuPosition]);
-
-  // Helper: truncate path for display
-  const truncatePath = (path: string, maxLength = 20): string => {
-    if (!path) return i18nService.t('noFolderSelected');
-    return getCompactFolderName(path, maxLength) || i18nService.t('noFolderSelected');
-  };
-
-  // Menu position calculator
-  const calculateMenuPosition = (height: number) => {
-    const rect = actionButtonRef.current?.getBoundingClientRect();
-    if (!rect) return null;
-    const menuWidth = 180;
-    const padding = 8;
-    const x = Math.min(
-      Math.max(padding, rect.right - menuWidth),
-      window.innerWidth - menuWidth - padding
-    );
-    const y = Math.min(rect.bottom + 8, window.innerHeight - height - padding);
-    return { x, y };
-  };
-
-  const openMenu = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (isRenaming) return;
-    if (menuPosition) {
-      closeMenu();
-      return;
-    }
-    const menuHeight = 160;
-    const position = calculateMenuPosition(menuHeight);
-    if (position) {
-      setMenuPosition(position);
-    }
-    setShowConfirmDelete(false);
-  };
-
-  const closeMenu = () => {
-    setMenuPosition(null);
-    setShowConfirmDelete(false);
-  };
-
-  // Open folder in Finder/Explorer
-  const handleOpenFolder = useCallback(async () => {
-    if (!currentSession?.cwd) return;
-    try {
-      await window.electron.shell.openPath(currentSession.cwd);
-    } catch (error) {
-      console.error('Failed to open folder:', error);
-    }
-  }, [currentSession?.cwd]);
-
-  // Rename handlers
-  const handleRenameClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!currentSession) return;
-    ignoreNextBlurRef.current = false;
-    setIsRenaming(true);
-    setShowConfirmDelete(false);
-    setRenameValue(currentSession.title);
-    setMenuPosition(null);
-  };
-
-  const handleRenameSave = async (e?: React.SyntheticEvent) => {
-    e?.stopPropagation();
-    if (!currentSession) return;
-    ignoreNextBlurRef.current = true;
-    const nextTitle = renameValue.trim();
-    if (nextTitle && nextTitle !== currentSession.title) {
-      await coworkService.renameSession(currentSession.id, nextTitle);
-    }
-    setIsRenaming(false);
-  };
-
-  const handleRenameCancel = (e?: React.MouseEvent | React.KeyboardEvent) => {
-    e?.stopPropagation();
-    ignoreNextBlurRef.current = true;
-    if (currentSession) {
-      setRenameValue(currentSession.title);
-    }
-    setIsRenaming(false);
-  };
-
-  const handleRenameBlur = (event: React.FocusEvent<HTMLInputElement>) => {
-    if (ignoreNextBlurRef.current) {
-      ignoreNextBlurRef.current = false;
-      return;
-    }
-    handleRenameSave(event);
-  };
-
-  // Pin/unpin handler
-  const handleTogglePin = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!currentSession) return;
-    await coworkService.setSessionPinned(currentSession.id, !currentSession.pinned);
-    closeMenu();
-  };
-
-  // Delete handlers
-  const handleDeleteClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setShowConfirmDelete(true);
-    setMenuPosition(null);
-  };
+  }, [currentSession?.id]);
 
   const sessionToMarkdown = useCallback((): string => {
     if (!currentSession) return '';
@@ -1856,7 +1498,6 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
   const handleExportText = useCallback(async (format: 'md' | 'json') => {
     if (!currentSession) return;
-    closeMenu();
     const content = format === 'md' ? sessionToMarkdown() : sessionToJSON();
     const timestamp = new Date().toISOString().slice(0, 10);
     const fileName = sanitizeExportFileName(`${currentSession.title}-${timestamp}.${format}`);
@@ -1879,12 +1520,11 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         detail: i18nService.t('coworkExportTextFailed'),
       }));
     }
-  }, [currentSession, closeMenu, sessionToMarkdown, sessionToJSON]);
+  }, [currentSession, sessionToMarkdown, sessionToJSON]);
 
   const handleShareClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!currentSession || isExportingImage) return;
-    closeMenu();
     setIsExportingImage(true);
 
     window.requestAnimationFrame(() => {
@@ -2044,24 +1684,6 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     });
   };
 
-  const handleConfirmDelete = async () => {
-    if (!currentSession) return;
-    if (onDeleteSession) {
-      await onDeleteSession(currentSession.id);
-    } else {
-      await coworkService.deleteSession(currentSession.id);
-    }
-    setShowConfirmDelete(false);
-    if (onNavigateHome) {
-      onNavigateHome();
-    }
-  };
-
-  const handleCancelDelete = (e?: React.MouseEvent) => {
-    e?.stopPropagation();
-    setShowConfirmDelete(false);
-  };
-
   const handleMessagesScroll = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -2073,6 +1695,23 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     const scrollable = container.scrollHeight > container.clientHeight;
     setIsScrollable((prev) => (prev === scrollable ? prev : scrollable));
     if (!scrollable) return;
+
+    // Load older messages when scrolled near the top
+    if (container.scrollTop <= 80 && !isLoadingMoreMessagesRef.current) {
+      const sessionId = currentSession?.id;
+      const offset = currentSession?.messagesOffset ?? 0;
+      if (sessionId && offset > 0) {
+        isLoadingMoreMessagesRef.current = true;
+        setIsLoadingMoreMessages(true);
+        prevScrollHeightRef.current = container.scrollHeight;
+        coworkService.loadMoreMessages(sessionId).catch(() => {
+          prevScrollHeightRef.current = null;
+          isLoadingMoreMessagesRef.current = false;
+          setIsLoadingMoreMessages(false);
+        });
+      }
+    }
+
 
     // Skip index recalculation during programmatic navigation
     if (isNavigatingRef.current) return;
@@ -2123,7 +1762,37 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       currentRailIndexRef.current = railIdx;
       setCurrentRailIndex(railIdx);
     }
-  }, []);
+  }, [currentSession?.id, currentSession?.messagesOffset]);
+
+  // Auto-load older messages if content doesn't fill the container (no scrollbar = onScroll never fires)
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || isLoadingMoreMessagesRef.current) return;
+    const sessionId = currentSession?.id;
+    const offset = currentSession?.messagesOffset ?? 0;
+    if (!sessionId || offset <= 0) return;
+    if (container.scrollHeight <= container.clientHeight) {
+      isLoadingMoreMessagesRef.current = true;
+      setIsLoadingMoreMessages(true);
+      prevScrollHeightRef.current = container.scrollHeight;
+      coworkService.loadMoreMessages(sessionId).catch(() => {
+        prevScrollHeightRef.current = null;
+        isLoadingMoreMessagesRef.current = false;
+        setIsLoadingMoreMessages(false);
+      });
+    }
+  }, [currentSession?.id, currentSession?.messagesOffset, currentSession?.messages.length]);
+
+  // Restore scroll position synchronously before browser paint when messages are prepended
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || prevScrollHeightRef.current === null) return;
+    const newScrollHeight = container.scrollHeight;
+    container.scrollTop += newScrollHeight - prevScrollHeightRef.current;
+    prevScrollHeightRef.current = null;
+    isLoadingMoreMessagesRef.current = false;
+    setIsLoadingMoreMessages(false);
+  }, [currentSession?.messages.length]);
 
   const navigateToRailItem = useCallback((railIndex: number) => {
     if (railIndex < 0 || railIndex >= railItemCountRef.current) return;
@@ -2226,6 +1895,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     ref.focus();
   }, [dispatch]);
 
+  const handleBrowserAnnotationCaptured = useCallback((payload: BrowserAnnotationPayload) => {
+    promptInputRef.current?.insertBrowserAnnotation(payload);
+  }, []);
+
   const messages = currentSession?.messages;
   const displayItems = useMemo(() => messages ? buildDisplayItems(messages) : [], [messages]);
   const turns = useMemo(() => buildConversationTurns(displayItems), [displayItems]);
@@ -2290,12 +1963,20 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       currentRailIndexRef.current = lastRail;
       setCurrentRailIndex(lastRail);
     }
-  }, [messagesLength, lastMessageContent, isStreaming, shouldAutoScroll, turns.length]);
+  }, [messagesLength, lastMessageContent, isContextCompacting, isStreaming, shouldAutoScroll, turns.length]);
 
 
   if (!currentSession) {
     return null;
   }
+
+  const artifactPanelFrameWidth = isArtifactPanelVisible
+    ? Math.max(artifactPanelMinWidth, Math.min(panelWidth, artifactPanelMaxWidth)) + ARTIFACT_PANEL_RESIZE_HANDLE_WIDTH
+    : 0;
+  const artifactHeaderWidth = isArtifactPanelVisible
+    ? Math.max(0, artifactPanelFrameWidth - ARTIFACT_PANEL_RESIZE_HANDLE_WIDTH)
+    : undefined;
+  const shouldShowTurnNavigationRail = turns.length > 1 && isScrollable;
 
   const renderConversationTurns = () => {
     let railCounter = 0;
@@ -2334,21 +2015,38 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       const userRailIdx = turn.userMessage ? railCounter++ : -1;
       const asstRailIdx = asstContent ? railCounter++ : -1;
 
+      const turnMessageIds = new Set<string>();
+      for (const item of turn.assistantItems) {
+        if (item.type === 'assistant' || item.type === 'system' || item.type === 'tool_result') {
+          turnMessageIds.add(item.message.id);
+        } else if (item.type === 'tool_group') {
+          turnMessageIds.add(item.group.toolUse.id);
+          if (item.group.toolResult) {
+            turnMessageIds.add(item.group.toolResult.id);
+          }
+        }
+      }
+      const turnArtifacts = sessionArtifacts.filter(
+        a => turnMessageIds.has(a.messageId) && PREVIEWABLE_ARTIFACT_TYPES.has(a.type)
+      );
+
       return (
         <LazyRenderTurn key={turn.id} turnId={turn.id} alwaysRender={alwaysRender} data-turn-index={index}>
           {turn.userMessage && (
-            <div data-export-role="user-message" {...(userRailIdx >= 0 ? { 'data-rail-index': userRailIdx } : undefined)}>
+            <div data-export-role="user-message" className={isLastTurn ? 'animate-message-in' : undefined} {...(userRailIdx >= 0 ? { 'data-rail-index': userRailIdx } : undefined)}>
               <UserMessageItem message={turn.userMessage} skills={skills} onReEdit={remoteManaged ? undefined : handleReEdit} />
             </div>
           )}
           {showAssistantBlock && (
-            <div data-export-role="assistant-block" {...(asstRailIdx >= 0 ? { 'data-rail-index': asstRailIdx } : undefined)}>
+            <div data-export-role="assistant-block" className={isLastTurn ? 'animate-message-in' : undefined} {...(asstRailIdx >= 0 ? { 'data-rail-index': asstRailIdx } : undefined)}>
               <AssistantTurnBlock
                 turn={turn}
+                artifacts={turnArtifacts}
                 resolveLocalFilePath={resolveLocalFilePath}
                 mapDisplayText={mapDisplayText}
+                onOpenLocalService={handleOpenLocalServiceArtifact}
                 showTypingIndicator={showTypingIndicator}
-                showCopyButtons={!isStreaming}
+                showCopyButtons={!isStreaming || !isLastTurn}
               />
             </div>
           )}
@@ -2358,11 +2056,11 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   };
 
   return (
-    <div ref={detailRootRef} className="flex-1 flex flex-col bg-background h-full">
-      {/* Header */}
-      <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border bg-surface shrink-0">
+    <div className="flex-1 flex flex-col h-full overflow-hidden">
+      {/* Header — spans full width */}
+      <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border bg-background shrink-0">
         {/* Left side: Toggle buttons (when collapsed) + Title */}
-        <div className="flex h-full items-center gap-2 min-w-0">
+        <div className="flex h-full flex-1 items-center gap-2 min-w-0">
           {isSidebarCollapsed && (
             <div className={`non-draggable flex items-center gap-1 ${isMac ? 'pl-[68px]' : ''}`}>
               <button
@@ -2382,104 +2080,231 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               {updateBadge}
             </div>
           )}
-          {isRenaming ? (
-            <input
-              ref={renameInputRef}
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  handleRenameSave(e);
-                }
-                if (e.key === 'Escape') {
-                  handleRenameCancel(e);
-                }
-              }}
-              onBlur={handleRenameBlur}
-              className="non-draggable min-w-0 max-w-[300px] rounded-lg border border-border bg-background px-2 py-1 text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-            />
-          ) : (
-            <h1 className="text-sm leading-none font-medium text-foreground truncate max-w-[360px]">
-              {currentSession.title || i18nService.t('coworkNewSession')}
-            </h1>
-          )}
+          <h1 className="text-sm leading-none font-medium text-foreground truncate max-w-[360px]">
+            {currentSession.title || i18nService.t('coworkNewSession')}
+          </h1>
         </div>
 
-        {/* Right side: Folder + Menu */}
-        <div className="non-draggable flex items-center gap-1">
-          {/* Folder button */}
+        {/* Right side: Artifact toggle */}
+        <div
+          className={`non-draggable flex h-full shrink-0 items-center gap-1 ${
+            isArtifactPanelVisible ? '-mr-4 border-l border-border pr-4' : ''
+          }`}
+          style={artifactHeaderWidth !== undefined ? { width: artifactHeaderWidth } : undefined}
+        >
+          {isArtifactPanelVisible && (
+            <div className="flex h-full min-w-0 flex-1 items-center">
+              <div className="relative flex h-full min-w-0 flex-1">
+                <div
+                  ref={artifactTabsScrollRef}
+                  className="scrollbar-hidden flex h-full min-w-0 flex-1 overflow-x-auto overflow-y-hidden"
+                >
+                  <div className="flex h-full min-w-max items-center gap-1 pl-4 pr-3">
+                  {isFileListPreviewTabOpen && (
+                    <div
+                      data-artifact-preview-active={
+                        !activeArtifactPreviewTab && activeSpecialPreviewTab === ArtifactSpecialTab.FileList
+                          ? 'true'
+                          : undefined
+                      }
+                      className={`group flex h-7 max-w-[190px] items-center rounded-lg text-xs transition-colors ${
+                        activeArtifactPreviewTab || activeSpecialPreviewTab !== ArtifactSpecialTab.FileList
+                          ? 'text-secondary hover:bg-surface hover:text-foreground'
+                          : 'bg-surface-raised text-foreground shadow-sm'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={handleActivateArtifactFileListTab}
+                        className="flex min-w-0 items-center gap-1.5 px-2 text-left"
+                        title={i18nService.t('artifactFileList')}
+                      >
+                        <ArtifactPanelIcon className="h-3.5 w-3.5 shrink-0" open />
+                        <span className="truncate">{i18nService.t('artifactFileList')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleCloseArtifactFileListTab();
+                        }}
+                        className={`mr-1 rounded p-0.5 transition-colors ${
+                          activeArtifactPreviewTab || activeSpecialPreviewTab !== ArtifactSpecialTab.FileList
+                            ? 'text-transparent group-hover:text-secondary group-hover:hover:bg-surface-hover group-hover:hover:text-foreground'
+                            : 'text-secondary hover:bg-surface-hover hover:text-foreground'
+                        }`}
+                        title={i18nService.t('artifactCloseTab')}
+                      >
+                        <ArtifactTabCloseIcon className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  {isBrowserPreviewTabOpen && (
+                    <div
+                      data-artifact-preview-active={
+                        !activeArtifactPreviewTab && activeSpecialPreviewTab === ArtifactSpecialTab.Browser
+                          ? 'true'
+                          : undefined
+                      }
+                      className={`group flex h-7 max-w-[190px] items-center rounded-lg text-xs transition-colors ${
+                        activeArtifactPreviewTab || activeSpecialPreviewTab !== ArtifactSpecialTab.Browser
+                          ? 'text-secondary hover:bg-surface hover:text-foreground'
+                          : 'bg-surface-raised text-foreground shadow-sm'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={handleActivateArtifactBrowserTab}
+                        className="flex min-w-0 items-center gap-1.5 px-2 text-left"
+                        title={i18nService.t('artifactBrowserTab')}
+                      >
+                        <ArtifactBrowserTabIcon className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{i18nService.t('artifactBrowserTab')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleCloseArtifactBrowserTab();
+                        }}
+                        className={`mr-1 rounded p-0.5 transition-colors ${
+                          activeArtifactPreviewTab || activeSpecialPreviewTab !== ArtifactSpecialTab.Browser
+                            ? 'text-transparent group-hover:text-secondary group-hover:hover:bg-surface-hover group-hover:hover:text-foreground'
+                            : 'text-secondary hover:bg-surface-hover hover:text-foreground'
+                        }`}
+                        title={i18nService.t('artifactCloseTab')}
+                      >
+                        <ArtifactTabCloseIcon className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  {artifactTabsWithArtifacts.map(({ tab, artifact }) => {
+                    const isActive = tab.id === activeArtifactPreviewTab?.id;
+                    const fileName = artifact.fileName || artifact.title;
+                    return (
+                      <div
+                        key={tab.id}
+                        data-artifact-preview-active={isActive ? 'true' : undefined}
+                        className={`group flex h-7 max-w-[190px] shrink-0 items-center rounded-lg text-xs transition-colors ${
+                          isActive
+                            ? 'bg-surface-raised text-foreground shadow-sm'
+                            : 'text-secondary hover:bg-surface hover:text-foreground'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleActivateArtifactTab(tab.id)}
+                          className="flex min-w-0 max-w-[158px] items-center gap-1.5 px-2 text-left"
+                          title={fileName}
+                        >
+                          <FileTypeIcon fileName={fileName} className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate">{fileName}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleCloseArtifactTab(tab.id);
+                          }}
+                          className={`mr-1 rounded p-0.5 transition-colors ${
+                            isActive
+                              ? 'text-secondary hover:bg-surface-hover hover:text-foreground'
+                              : 'text-transparent group-hover:text-secondary group-hover:hover:bg-surface-hover group-hover:hover:text-foreground'
+                          }`}
+                          title={i18nService.t('artifactCloseTab')}
+                        >
+                          <ArtifactTabCloseIcon className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {shouldPinArtifactAddTab ? (
+                    <div className="h-full w-9 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <div className="z-20 flex h-full shrink-0 items-center bg-background pl-1 pr-1">
+                      <button
+                        ref={artifactAddButtonRef}
+                        type="button"
+                        onClick={handleToggleArtifactAddMenu}
+                        className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-secondary transition-colors hover:bg-surface hover:text-foreground ${
+                          showArtifactAddMenu ? 'bg-surface text-foreground' : ''
+                        }`}
+                        aria-label={i18nService.t('artifactAddTab')}
+                        title={i18nService.t('artifactAddTab')}
+                      >
+                        <ArtifactTabPlusIcon className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+                  </div>
+                </div>
+                {shouldPinArtifactAddTab && (
+                  <div className="absolute inset-y-0 right-0 z-20 flex items-center bg-background pl-1 pr-1">
+                    <button
+                      ref={artifactAddButtonRef}
+                      type="button"
+                      onClick={handleToggleArtifactAddMenu}
+                      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-secondary transition-colors hover:bg-surface hover:text-foreground ${
+                        showArtifactAddMenu ? 'bg-surface text-foreground' : ''
+                      }`}
+                      aria-label={i18nService.t('artifactAddTab')}
+                      title={i18nService.t('artifactAddTab')}
+                    >
+                      <ArtifactTabPlusIcon className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+                {(artifactTabsCanScrollLeft || artifactTabsCanScrollRight) && (
+                  <>
+                    {artifactTabsCanScrollLeft && (
+                      <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-gradient-to-r from-background from-[34%] via-background/80 via-[66%] to-transparent backdrop-blur-sm [mask-image:linear-gradient(to_right,black_0%,black_40%,rgba(0,0,0,0.75)_72%,transparent_100%)] [-webkit-mask-image:linear-gradient(to_right,black_0%,black_40%,rgba(0,0,0,0.75)_72%,transparent_100%)]" />
+                    )}
+                    {artifactTabsCanScrollRight && (
+                      <div className="pointer-events-none absolute inset-y-0 right-[36px] z-10 w-12 bg-gradient-to-l from-background from-[18%] via-background/80 via-[58%] to-transparent backdrop-blur-sm [mask-image:linear-gradient(to_left,black_0%,black_30%,rgba(0,0,0,0.75)_68%,transparent_100%)] [-webkit-mask-image:linear-gradient(to_left,black_0%,black_30%,rgba(0,0,0,0.75)_68%,transparent_100%)]" />
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+          {/* Artifact panel toggle */}
           <button
             type="button"
-            onClick={handleOpenFolder}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
-            aria-label={i18nService.t('coworkOpenFolder')}
+            onClick={handleToggleArtifactPanel}
+            className="relative h-8 w-8 inline-flex items-center justify-center rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+            aria-label={i18nService.t('artifactPanelToggle')}
           >
-            <FolderIcon className="h-4 w-4" />
-            <span className="max-w-[120px] truncate text-xs">
-              {truncatePath(currentSession.cwd)}
-            </span>
+            <ArtifactPanelIcon className="h-4 w-4" open={isPanelOpen} />
           </button>
 
-          {/* Menu button */}
-          <button
-            ref={actionButtonRef}
-            type="button"
-            onClick={openMenu}
-            className="p-1.5 rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-            aria-label={i18nService.t('coworkSessionActions')}
-          >
-            <EllipsisHorizontalIcon className="h-5 w-5" />
-          </button>
           <WindowTitleBar inline className="ml-1" />
         </div>
       </div>
 
-      {/* Floating Menu */}
-      {menuPosition && (
+      {showArtifactAddMenu && artifactAddMenuPosition && createPortal(
         <div
-          ref={menuRef}
-          className="fixed z-50 min-w-[180px] rounded-xl border border-border bg-surface shadow-popover popover-enter overflow-hidden"
-          style={{ top: menuPosition.y, left: menuPosition.x }}
-          role="menu"
+          ref={artifactAddMenuRef}
+          className="fixed z-50 w-44 overflow-hidden rounded-lg border border-border bg-background py-1 shadow-lg"
+          style={{ left: artifactAddMenuPosition.left, top: artifactAddMenuPosition.top }}
         >
           <button
             type="button"
-            onClick={handleRenameClick}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-surface-raised transition-colors"
+            onClick={handleOpenArtifactFileListFromMenu}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-surface"
           >
-            <PencilSquareIcon className="h-4 w-4 text-secondary" />
-            {i18nService.t('renameConversation')}
+            <ArtifactPanelIcon className="h-4 w-4 shrink-0" open />
+            <span className="truncate">{i18nService.t('artifactOpenFileTab')}</span>
           </button>
           <button
             type="button"
-            onClick={handleTogglePin}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-surface-raised transition-colors"
+            onClick={handleOpenArtifactBrowserTab}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-surface"
           >
-            <PushPinIcon
-              slashed={currentSession.pinned}
-              className={`h-[18px] w-[18px] text-secondary ${currentSession.pinned ? 'opacity-60' : ''}`}
-            />
-            {currentSession.pinned ? i18nService.t('coworkUnpinSession') : i18nService.t('coworkPinSession')}
+            <ArtifactBrowserTabIcon className="h-4 w-4 shrink-0" />
+            <span className="truncate">{i18nService.t('artifactBrowserTab')}</span>
           </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); closeMenu(); setShowExportOptions(true); }}
-            disabled={isExportingImage}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm dark:text-claude-darkText text-claude-text hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
-          >
-            <ShareIcon className="h-4 w-4 text-secondary" />
-            {i18nService.t('coworkShareSession')}
-          </button>
-          <button
-            type="button"
-            onClick={handleDeleteClick}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-red-500 hover:bg-red-500/10 transition-colors"
-          >
-            <TrashIcon className="h-4 w-4" />
-            {i18nService.t('deleteSession')}
-          </button>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Export Options Modal */}
@@ -2537,55 +2362,37 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
-      {showConfirmDelete && (
-        <Modal onClose={handleCancelDelete} overlayClassName="fixed inset-0 z-50 flex items-center justify-center modal-backdrop" className="w-full max-w-sm mx-4 bg-surface rounded-2xl shadow-modal overflow-hidden modal-content">
-            {/* Header */}
-            <div className="flex items-center gap-3 px-5 py-4">
-              <div className="p-2 rounded-full bg-red-100 dark:bg-red-900/30">
-                <ExclamationTriangleIcon className="h-5 w-5 text-red-600 dark:text-red-500" />
-              </div>
-              <h2 className="text-base font-semibold text-foreground">
-                {i18nService.t('deleteTaskConfirmTitle')}
-              </h2>
-            </div>
-
-            {/* Content */}
-            <div className="px-5 pb-4">
-              <p className="text-sm text-secondary">
-                {i18nService.t('deleteTaskConfirmMessage')}
-              </p>
-            </div>
-
-            {/* Footer */}
-            <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-border">
-              <button
-                onClick={handleCancelDelete}
-                className="px-4 py-2 text-sm font-medium rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-              >
-                {i18nService.t('cancel')}
-              </button>
-              <button
-                onClick={handleConfirmDelete}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-red-500 hover:bg-red-600 text-white transition-colors"
-              >
-                {i18nService.t('deleteSession')}
-              </button>
-            </div>
-        </Modal>
-      )}
+      {/* Content row: chat + artifact panel */}
+      <div ref={contentRowRef} className="flex-1 flex overflow-hidden">
+      <div ref={detailRootRef} className="flex-1 flex flex-col bg-background h-full" style={{ minWidth: COWORK_DETAIL_MIN_WIDTH }}>
       <div className="relative flex-1 min-h-0">
         <div
           ref={scrollContainerRef}
           onScroll={handleMessagesScroll}
-          className={`h-full min-h-0 overflow-y-auto pt-3 ${turns.length > 1 && isScrollable ? 'pr-8' : 'pr-3'}`}
+          className="h-full min-h-0 overflow-y-auto pt-3"
+          style={{ scrollbarGutter: 'stable both-edges' }}
         >
+          {isLoadingMoreMessages && (
+            <div className="py-2 text-center text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+              {i18nService.t('loading')}
+            </div>
+          )}
           {renderConversationTurns()}
+          {isContextCompacting && (
+            <div className={`${COWORK_DETAIL_GUTTER_CLASS} animate-message-in`}>
+              <div className={COWORK_DETAIL_CONTENT_CLASS}>
+                <ContextCompactionDivider
+                  label={i18nService.t('coworkContextCompacting')}
+                  active
+                />
+              </div>
+            </div>
+          )}
           <div className="h-20" />
         </div>
 
         {/* Turn Navigation Rail — to the left of scrollbar */}
-        {turns.length > 1 && isScrollable && (
+        {shouldShowTurnNavigationRail && (
           <div
             className="absolute right-[18px] top-1/2 -translate-y-1/2 w-5 flex flex-col items-end z-10"
             style={{ maxHeight: 'calc(100% - 40px)' }}
@@ -2793,29 +2600,99 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       </div>
 
       {/* Streaming Activity Bar */}
-      {isStreaming && <StreamingActivityBar messages={currentSession.messages} />}
+      {isSessionBusy && <StreamingActivityBar messages={currentSession.messages} isContextMaintenance={isContextMaintenance} />}
 
       {/* Input Area */}
-      <div className="p-4 shrink-0">
-        <div className="max-w-3xl mx-auto">
+      <div className={`pt-0 pb-4 shrink-0 ${COWORK_DETAIL_GUTTER_CLASS}`}>
+        <div className={COWORK_DETAIL_CONTENT_CLASS}>
           <CoworkPromptInput
             ref={promptInputRef}
             onSubmit={onContinue}
             onStop={onStop}
-            isStreaming={isStreaming}
+            isStreaming={isSessionBusy}
             placeholder={i18nService.t(remoteManaged ? 'coworkRemoteManagedPlaceholder' : 'coworkContinuePlaceholder')}
             disabled={remoteManaged}
             size="large"
             remoteManaged={remoteManaged}
             onManageSkills={remoteManaged ? undefined : onManageSkills}
-            showModelSelector={!remoteManaged}
+            showModelSelector={true}
+            showReadOnlyContext={true}
+            readOnlyContextTrailingText={i18nService.t('aiGeneratedDisclaimer')}
+            workingDirectory={currentSession?.cwd ?? ''}
+            contextAgentId={currentSession?.agentId}
             sessionId={currentSession?.id}
+            contextUsageControl={(
+              <div ref={compactConfirmRef} className="relative inline-flex flex-shrink-0">
+                <ContextUsageIndicator
+                  usage={contextUsage}
+                  compacting={isContextBusy}
+                  disabled={remoteManaged || !currentSession?.id}
+                  onCompact={handleCompactContext}
+                  showTooltip={!showCompactConfirm}
+                  active={showCompactConfirm}
+                  className="-mr-1"
+                />
+                {showCompactConfirm && (
+                  <div className="absolute bottom-full left-1/2 z-50 mb-1.5 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-border bg-surface p-1.5 shadow-popover">
+                    <button
+                      type="button"
+                      onClick={handleCancelCompactContext}
+                      className="whitespace-nowrap rounded-md bg-surface-raised px-2.5 py-1 text-center text-[11px] font-medium leading-4 text-secondary transition-colors hover:text-foreground"
+                    >
+                      {i18nService.t('cancel')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmCompactContext}
+                      className="whitespace-nowrap rounded-md bg-primary px-2.5 py-1 text-center text-[11px] font-semibold leading-4 text-white transition-colors hover:bg-primary-hover"
+                    >
+                      {i18nService.t('coworkContextCompactConfirmActionShort')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           />
         </div>
-        <p className="text-center text-[11px] text-muted opacity-85 mt-2 mb-[-8px] select-none">
-          {i18nService.t('aiGeneratedDisclaimer')}
-        </p>
       </div>
+    </div>
+    {shouldRenderArtifactPanel && (
+      <div
+        className={`h-full shrink-0 overflow-hidden ${
+          isArtifactPanelTransitioning
+            ? 'transition-[width,opacity] duration-200 ease-out motion-reduce:transition-none'
+            : ''
+        } ${isArtifactPanelVisible ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+        style={{
+          width: artifactPanelFrameWidth,
+          maxWidth: artifactPanelMaxWidth + ARTIFACT_PANEL_RESIZE_HANDLE_WIDTH,
+        }}
+        aria-hidden={!isPanelOpen}
+      >
+        <div
+          className="flex h-full"
+          style={{ width: artifactPanelFrameWidth }}
+        >
+          <ArtifactPanelErrorBoundary onClose={() => dispatch(closePanel({ sessionId: currentSession.id }))}>
+            <ArtifactPanel
+              sessionId={currentSession.id}
+              artifacts={sessionArtifacts}
+              activeSpecialTab={activeSpecialPreviewTab}
+              minPanelWidth={artifactPanelMinWidth}
+              maxPanelWidth={artifactPanelMaxWidth}
+              browserAddress={browserPreviewAddress}
+              browserUrl={browserPreviewUrl}
+              onBrowserAddressChange={handleBrowserPreviewAddressChange}
+              onBrowserUrlChange={handleBrowserPreviewUrlChange}
+              onOpenFileListTab={handleOpenArtifactFileListTab}
+              onOpenBrowserTab={handleOpenArtifactBrowserTab}
+              onBrowserAnnotationCaptured={handleBrowserAnnotationCaptured}
+            />
+          </ArtifactPanelErrorBoundary>
+        </div>
+      </div>
+    )}
+    </div>
     </div>
   );
 };

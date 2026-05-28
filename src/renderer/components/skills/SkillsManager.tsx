@@ -1,4 +1,4 @@
-import { ArrowPathIcon } from '@heroicons/react/20/solid';
+import { ArrowPathIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
 import {
   ArrowDownTrayIcon,
   CheckCircleIcon,
@@ -8,6 +8,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
+import type { SkillSecurityReport as SkillSecurityReportData } from '../../../main/libs/skillSecurity/skillSecurityTypes';
+import { ENABLE_OPENCLAW_SKILL_SYNC } from '../../../shared/featureFlags';
 import { i18nService } from '../../services/i18n';
 import { compareVersions,resolveLocalizedText, skillService } from '../../services/skill';
 import { RootState } from '../../store';
@@ -19,15 +21,15 @@ import FolderOpenIcon from '../icons/FolderOpenIcon';
 import LinkIcon from '../icons/LinkIcon';
 import PencilSquareIcon from '../icons/PencilSquareIcon';
 import PlusCircleIcon from '../icons/PlusCircleIcon';
-import PuzzleIcon from '../icons/PuzzleIcon';
 import SearchIcon from '../icons/SearchIcon';
+import SkillIcon from '../icons/SkillIcon';
 import TrashIcon from '../icons/TrashIcon';
 import UploadIcon from '../icons/UploadIcon';
-import Tooltip from '../ui/Tooltip';
 import SkillSecurityReport from './SkillSecurityReport';
 
 type SkillTab = 'installed' | 'marketplace';
 type ImportSourceType = 'github' | 'clawhub';
+type DirectImportSource = 'zip' | 'folder' | 'remote';
 
 const importSourceTypes: ImportSourceType[] = ['github', 'clawhub'];
 
@@ -80,8 +82,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   const [skillPendingDelete, setSkillPendingDelete] = useState<Skill | null>(null);
   const [isDeletingSkill, setIsDeletingSkill] = useState(false);
-  const [securityReport, setSecurityReport] = useState<any>(null);
+  const [securityReport, setSecurityReport] = useState<SkillSecurityReportData | null>(null);
   const [pendingInstallId, setPendingInstallId] = useState<string | null>(null);
+  const [pendingImportSource, setPendingImportSource] = useState<DirectImportSource | null>(null);
   const [isConfirmingInstall, setIsConfirmingInstall] = useState(false);
   const [upgradeState, setUpgradeState] = useState<{
     isActive: boolean;
@@ -92,13 +95,23 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   } | null>(null);
   const upgradeCancelledRef = useRef(false);
 
+  const [detectedOpenClawSkills, setDetectedOpenClawSkills] = useState<Array<{ name: string; description: string; skillKey: string }> | null>(null);
+  const [isSyncingFromOpenClaw, setIsSyncingFromOpenClaw] = useState(false);
+
   const addSkillMenuRef = useRef<HTMLDivElement>(null);
   const addSkillButtonRef = useRef<HTMLButtonElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
 
+  const showToast = (message: string) => {
+    window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
+  };
+
   useEffect(() => {
     let isActive = true;
     const loadSkills = async () => {
+      // Refresh plugin skill IDs from OpenClaw before loading skills,
+      // so that plugin-provided skills are correctly marked as built-in.
+      await window.electron?.skills.refreshPluginSkillIds().catch(() => {});
       const loadedSkills = await skillService.loadSkills();
       if (!isActive) return;
       dispatch(setSkills(loadedSkills));
@@ -127,6 +140,19 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       setIsLoadingMarketplace(false);
     });
     return () => { isActive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!ENABLE_OPENCLAW_SKILL_SYNC) return;
+    if (sessionStorage.getItem('openClawSkillSyncDetected')) return;
+    const detect = async () => {
+      const result = await window.electron?.skills.detectFromOpenClaw();
+      if (result?.skills?.length > 0) {
+        sessionStorage.setItem('openClawSkillSyncDetected', '1');
+        setDetectedOpenClawSkills(result.skills);
+      }
+    };
+    detect();
   }, []);
 
   useEffect(() => {
@@ -189,7 +215,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   }, [selectedSkill, selectedMarketplaceSkill]);
 
   const filteredSkills = useMemo(() => {
-    const query = skillSearchQuery.toLowerCase();
+    const query = skillSearchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
     return skills.filter(skill => {
       const matchesSearch = skill.name.toLowerCase().includes(query)
         || skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description).toLowerCase().includes(query);
@@ -198,7 +224,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   }, [skills, skillSearchQuery]);
 
   const filteredMarketplaceSkills = useMemo(() => {
-    const query = skillSearchQuery.toLowerCase();
+    const query = skillSearchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
     let results = marketplaceSkills;
     if (query) {
       results = results.filter(skill => {
@@ -261,7 +287,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     setSkillPendingDelete(null);
   };
 
-  const handleAddSkillFromSource = async (source: string) => {
+  const handleAddSkillFromSource = async (source: string, sourceType: DirectImportSource) => {
     const trimmedSource = source.trim();
     if (!trimmedSource) return;
     setIsDownloadingSkill(true);
@@ -285,11 +311,13 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       setIsRemoteImportOpen(false);
       setSecurityReport(result.auditReport);
       setPendingInstallId(result.pendingInstallId);
+      setPendingImportSource(sourceType);
       return;
     }
     if (result.skills) {
       dispatch(setSkills(result.skills));
     }
+    showToast(i18nService.t('skillImportSuccess'));
     setSkillDownloadSource('');
     setIsAddSkillMenuOpen(false);
     setIsRemoteImportOpen(false);
@@ -302,7 +330,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       filters: [{ name: 'Zip', extensions: ['zip'] }],
     });
     if (result.success && result.path) {
-      await handleAddSkillFromSource(result.path);
+      await handleAddSkillFromSource(result.path, 'zip');
     }
   };
 
@@ -310,7 +338,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     if (isDownloadingSkill) return;
     const result = await window.electron.dialog.selectDirectory();
     if (result.success && result.path) {
-      await handleAddSkillFromSource(result.path);
+      await handleAddSkillFromSource(result.path, 'folder');
     }
   };
 
@@ -344,6 +372,29 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     onCreateByChat?.();
   };
 
+  const handleSyncFromOpenClaw = async () => {
+    setIsSyncingFromOpenClaw(true);
+    try {
+      await window.electron?.skills.syncFromOpenClaw();
+      setDetectedOpenClawSkills(null);
+      showToast(i18nService.t('skillsSyncSuccess'));
+    } catch {
+      showToast(i18nService.t('skillsSyncFailed'));
+    } finally {
+      setIsSyncingFromOpenClaw(false);
+    }
+  };
+
+  const handleManualOpenClawSync = async () => {
+    setIsAddSkillMenuOpen(false);
+    const result = await window.electron?.skills.detectFromOpenClaw();
+    if (result?.skills?.length > 0) {
+      setDetectedOpenClawSkills(result.skills);
+    } else {
+      showToast(i18nService.t('skillsSyncNoneFound'));
+    }
+  };
+
   const handleImportFromDialog = async () => {
     if (isDownloadingSkill) return;
     const trimmed = skillDownloadSource.trim();
@@ -369,7 +420,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       }
     }
 
-    await handleAddSkillFromSource(trimmed);
+    await handleAddSkillFromSource(trimmed, 'remote');
   };
 
   const getSkillInstallStatus = (marketplaceSkill: MarketplaceSkill): 'not_installed' | 'installed' | 'update_available' => {
@@ -415,6 +466,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
         setUpgradeState(null);
         setSecurityReport(result.auditReport);
         setPendingInstallId(result.pendingInstallId);
+        setPendingImportSource(null);
         return;
       }
       if (result.skills) {
@@ -489,6 +541,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       if (result.auditReport && result.pendingInstallId) {
         setSecurityReport(result.auditReport);
         setPendingInstallId(result.pendingInstallId);
+        setPendingImportSource(null);
         return;
       }
       if (result.skills) {
@@ -508,6 +561,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       const result = await skillService.confirmInstall(pendingInstallId, action);
       if (result.success && result.skills) {
         dispatch(setSkills(result.skills));
+        if (action !== 'cancel' && pendingImportSource) {
+          showToast(i18nService.t('skillImportSuccess'));
+        }
       }
       if (!result.success && result.error) {
         setSkillActionError(result.error);
@@ -517,6 +573,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     } finally {
       setSecurityReport(null);
       setPendingInstallId(null);
+      setPendingImportSource(null);
       setIsConfirmingInstall(false);
       setInstallingSkillId(null);
       setSkillDownloadSource('');
@@ -551,8 +608,17 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
             placeholder={i18nService.t('searchSkills')}
             value={skillSearchQuery}
             onChange={(e) => setSkillSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-surface text-foreground placeholder-secondary border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+            className="w-full pl-9 pr-8 py-2 text-sm rounded-xl bg-surface text-foreground placeholder-secondary border border-border focus:outline-none focus:ring-2 focus:ring-primary"
           />
+          {skillSearchQuery && (
+            <button
+              type="button"
+              onClick={() => setSkillSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-secondary hover:text-primary transition-colors"
+            >
+              <XCircleIconSolid className="h-4 w-4" />
+            </button>
+          )}
         </div>
         <div className="relative">
           <button
@@ -607,6 +673,16 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 <PencilSquareIcon className="h-4 w-4 text-secondary" />
                 <span>{i18nService.t('createSkillByChat')}</span>
               </button>
+              {ENABLE_OPENCLAW_SKILL_SYNC && (
+              <button
+                type="button"
+                onClick={handleManualOpenClawSync}
+                className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-foreground hover:bg-surface-raised transition-colors border-t border-border"
+              >
+                <ArrowPathIcon className="h-4 w-4 text-secondary" />
+                <span>{i18nService.t('syncSkillsFromOpenClaw')}</span>
+              </button>
+              )}
             </div>
           )}
         </div>
@@ -712,7 +788,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="w-7 h-7 rounded-lg bg-surface flex items-center justify-center flex-shrink-0">
-                    <PuzzleIcon className="h-4 w-4 text-secondary" />
+                    <SkillIcon className="h-4 w-4 text-secondary" />
                   </div>
                   <span className="text-sm font-medium text-foreground truncate">
                     {skill.name}
@@ -733,7 +809,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                     className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
                       readOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
                     } ${
-                      skill.enabled ? 'bg-primary' : 'bg-border'
+                      skill.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
                     }`}
                     onClick={(e) => { e.stopPropagation(); if (!readOnly) handleToggleSkill(skill.id); }}
                   >
@@ -746,16 +822,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 </div>
               </div>
 
-              <Tooltip
-                content={skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)}
-                position="bottom"
-                maxWidth="360px"
-                className="block w-full"
-              >
-                <p className="text-xs text-secondary line-clamp-2 mb-2">
-                  {skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)}
-                </p>
-              </Tooltip>
+              <p className="text-xs text-secondary line-clamp-2 mb-2">
+                {skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)}
+              </p>
 
               <div className="flex items-center justify-between text-[10px] text-secondary">
                 <div className="flex items-center gap-2">
@@ -824,7 +893,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <div className="w-7 h-7 rounded-lg bg-surface flex items-center justify-center flex-shrink-0">
-                      <PuzzleIcon className="h-4 w-4 text-secondary" />
+                      <SkillIcon className="h-4 w-4 text-secondary" />
                     </div>
                     <span className="text-sm font-medium text-foreground truncate">
                       {skill.name}
@@ -869,16 +938,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                   </div>
                 </div>
 
-                <Tooltip
-                  content={resolveLocalizedText(skill.description)}
-                  position="bottom"
-                  maxWidth="360px"
-                  className="block w-full"
-                >
-                  <p className="text-xs text-secondary line-clamp-2 mb-2">
-                    {resolveLocalizedText(skill.description)}
-                  </p>
-                </Tooltip>
+                <p className="text-xs text-secondary line-clamp-2 mb-2">
+                  {resolveLocalizedText(skill.description)}
+                </p>
 
                 <div className="flex items-center gap-2 text-[10px] text-secondary">
                   {skill.source?.from && (
@@ -923,7 +985,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-9 h-9 rounded-lg bg-background flex items-center justify-center flex-shrink-0">
-                  <PuzzleIcon className="h-5 w-5 text-secondary" />
+                  <SkillIcon className="h-5 w-5 text-secondary" />
                 </div>
                 <div className="min-w-0">
                   <div className="text-base font-semibold text-foreground truncate">
@@ -1024,7 +1086,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-9 h-9 rounded-lg bg-background flex items-center justify-center flex-shrink-0">
-                  <PuzzleIcon className="h-5 w-5 text-secondary" />
+                  <SkillIcon className="h-5 w-5 text-secondary" />
                 </div>
                 <div className="min-w-0">
                   <div className="text-base font-semibold text-foreground truncate">
@@ -1110,7 +1172,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
                   readOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
                 } ${
-                  selectedSkill.enabled ? 'bg-primary' : 'bg-border'
+                  selectedSkill.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
                 }`}
                 onClick={() => {
                   if (readOnly) return;
@@ -1272,6 +1334,59 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                   {i18nService.t('skillUpgradeCancel')}
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OpenClaw Skill Sync - Loading Overlay */}
+      {isSyncingFromOpenClaw && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-background border border-border rounded-xl shadow-lg p-6 flex items-center gap-3">
+            <ArrowPathIcon className="h-5 w-5 animate-spin text-primary" />
+            <span className="text-sm text-foreground">{i18nService.t('skillsSyncing')}</span>
+          </div>
+        </div>
+      )}
+
+      {/* OpenClaw Skill Sync - Detection Dialog */}
+      {detectedOpenClawSkills !== null && detectedOpenClawSkills.length > 0 && !isSyncingFromOpenClaw && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-background border border-border rounded-xl shadow-lg w-full max-w-md p-6">
+            <h3 className="text-base font-semibold text-foreground mb-2">
+              {i18nService.t('skillsSyncTitle')}
+            </h3>
+            <p className="text-sm text-muted-foreground mb-3">
+              {i18nService.t('skillsSyncFound').replace('{count}', String(detectedOpenClawSkills.length))}
+            </p>
+            <div className="mb-4 max-h-40 overflow-y-auto rounded-md border border-border bg-surface-raised p-2 space-y-1.5">
+              {detectedOpenClawSkills.map(skill => (
+                <div key={skill.skillKey} className="flex items-baseline gap-2 px-1">
+                  <span className="shrink-0 text-xs font-medium text-foreground bg-background border border-border rounded px-1.5 py-0.5">{skill.name}</span>
+                  {skill.description && (
+                    <span className="text-[11px] text-muted-foreground truncate">{skill.description}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground mb-5">
+              {i18nService.t('skillsSyncLater')}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDetectedOpenClawSkills(null)}
+                className="px-4 py-1.5 text-xs rounded-lg border border-border text-secondary hover:bg-surface-raised transition-colors"
+              >
+                {i18nService.t('skillsSyncSkip')}
+              </button>
+              <button
+                type="button"
+                onClick={handleSyncFromOpenClaw}
+                className="px-4 py-1.5 text-xs rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
+              >
+                {i18nService.t('skillsSyncNow')}
+              </button>
             </div>
           </div>
         </div>

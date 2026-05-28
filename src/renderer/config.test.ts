@@ -1,8 +1,11 @@
-import { test, expect } from 'vitest';
+import { ApiFormat, ProviderName } from '@shared/providers';
+import { expect, test } from 'vitest';
+
 import {
-  isCustomProvider,
+  defaultConfig,
   getCustomProviderDefaultName,
   getProviderDisplayName,
+  isCustomProvider,
 } from './config';
 
 test('isCustomProvider: custom_0 is custom', () => {
@@ -46,11 +49,11 @@ test('getCustomProviderDefaultName: custom_42 -> Custom42', () => {
 });
 
 test('getProviderDisplayName: built-in provider capitalizes first letter', () => {
-  expect(getProviderDisplayName('openai')).toBe('Openai');
+  expect(getProviderDisplayName('openai')).toBe('OpenAI');
 });
 
 test('getProviderDisplayName: built-in provider with no config', () => {
-  expect(getProviderDisplayName('deepseek')).toBe('Deepseek');
+  expect(getProviderDisplayName('deepseek')).toBe('DeepSeek');
 });
 
 test('getProviderDisplayName: custom provider without config uses default name', () => {
@@ -69,3 +72,8 @@ test('getProviderDisplayName: custom provider with undefined displayName uses de
   expect(getProviderDisplayName('custom_2', { displayName: undefined })).toBe('Custom2');
 });
 
+test('defaultConfig uses OpenAI-compatible DeepSeek defaults', () => {
+  expect(defaultConfig.api.baseUrl).toBe('https://api.deepseek.com');
+  expect(defaultConfig.providers?.[ProviderName.DeepSeek]?.apiFormat).toBe(ApiFormat.OpenAI);
+  expect(defaultConfig.providers?.[ProviderName.Xiaomi]?.apiFormat).toBe(ApiFormat.OpenAI);
+});
